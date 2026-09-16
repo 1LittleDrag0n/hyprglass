@@ -4,6 +4,7 @@
 #include "GlassLayerSurface.hpp"
 #include "GlassRenderer.hpp"
 #include "Globals.hpp"
+#include "LayerDamageObserver.hpp"
 #include "PluginConfig.hpp"
 
 #include <hyprland/src/Compositor.hpp>
@@ -95,73 +96,6 @@ static void drawGlassForFullscreenWindow() {
 }
 
 // ── Layer surface support ────────────────────────────────────────────────────
-
-static bool surfaceInTree(const SP<CWLSurfaceResource>& surface, const SP<CWLSurfaceResource>& root) {
-    if (!root)
-        return false;
-    bool found = false;
-    root->breadthfirst([&](SP<CWLSurfaceResource> s, const Vector2D&, void*) {
-        if (s == surface)
-            found = true;
-    }, nullptr);
-    return found;
-}
-
-using damageSurfaceFn = void (*)(Render::IHyprRenderer*, SP<CWLSurfaceResource>, double, double, double);
-
-// Client commits are the only signal that content below a glassed layer changed
-// (e.g. a playing video) — the scene-generation cache only sees window events.
-static void hkDamageSurface(Render::IHyprRenderer* thisptr, SP<CWLSurfaceResource> surface, double x, double y, double scale) {
-    ((damageSurfaceFn)g_pGlobalState->damageSurfaceHook->m_original)(thisptr, surface, x, y, scale);
-
-    if (!g_pGlobalState || !surface)
-        return;
-
-    const auto& config = g_pGlobalState->config;
-    if (!config.layersEnabled || !**config.layersEnabled ||
-        g_pGlobalState->layerSurfaces.empty())
-        return;
-
-    // cheap skip when nothing can want a live resample
-    const bool globalLive = config.layersLiveResample && **config.layersLiveResample;
-    if (!globalLive && std::ranges::none_of(g_pGlobalState->layerNamespaceLiveResample, [](const auto& kv) { return kv.second; }))
-        return;
-
-    const auto wlSurface = Desktop::View::CWLSurface::fromResource(surface);
-    if (!wlSurface)
-        return;
-
-    // same region Hyprland damaged: commits without damage change nothing behind us
-    CRegion damage = wlSurface->computeDamage();
-    if (damage.empty())
-        return;
-    if (scale != 1.0)
-        damage.scale(scale);
-    damage.translate({x, y});
-    const CBox damagedBox = damage.getExtents();
-
-    for (const auto& [_, state] : g_pGlobalState->layerSurfaces) {
-        const auto layer = state->getLayerSurface();
-        if (!layer || !layer->m_mapped)
-            continue;
-
-        if (!state->liveResampleEnabled())
-            continue;
-
-        // a layer's own content is not its background
-        if (surfaceInTree(surface, layer->wlSurface() ? layer->wlSurface()->resource() : nullptr))
-            continue;
-
-        const auto monitor = layer->m_monitor.lock();
-        const float monScale = monitor ? monitor->m_scale : 1.0f;
-        CBox sampleBox = CBox{layer->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT),
-                              layer->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT)};
-        sampleBox.expand(GlassRenderer::SAMPLE_PADDING_PX / monScale);
-
-        if (sampleBox.overlaps(damagedBox))
-            state->markBackgroundDirty();
-    }
-}
 
 // Parse comma-separated config string into a set of trimmed values.
 static void parseCommaSeparated(StringConfigPtr configPtr, std::unordered_set<std::string>& out) {
@@ -287,6 +221,10 @@ using renderLayerFn = void (*)(Render::IHyprRenderer*, PHLLS, PHLMONITOR, const 
 static void hkRenderLayer(Render::IHyprRenderer* thisptr, PHLLS layerSurface, PHLMONITOR monitor,
                            const Time::steady_tp& now, bool popups, bool lockscreen) {
     const auto& config = g_pGlobalState->config;
+
+    // layers:enabled can flip without a config reload (hyprctl keyword), so follow
+    // it here too; this is a no-op once the observer is in the requested state
+    LayerDamageObserver::setEnabled(config.layersEnabled && **config.layersEnabled);
 
     // Hyprland renders closing layers from snapshots. Do not inject the glass
     // pipeline while that snapshot is being captured: the snapshot framebuffer
@@ -450,6 +388,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         parseLayerNamespaceFilters();
         commitPendingLayers(); // merge Lua layer() calls on top of string config
         validateConfig();
+        // config values are only valid here: reloadConfig() is asynchronous
+        LayerDamageObserver::setEnabled(g_pGlobalState->config.layersEnabled && **g_pGlobalState->config.layersEnabled);
     }));
 
 
@@ -471,39 +411,28 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     }
 
     // Hook renderLayer for layer surface glass support
+    bool renderLayerFound = false;
     auto renderLayerMatches = HyprlandAPI::findFunctionsByName(PHANDLE, "renderLayer");
     for (const auto& match : renderLayerMatches) {
         // Match the overload: Render::IHyprRenderer::renderLayer(PHLLS, PHLMONITOR, steady_tp, bool, bool)
         if (match.demangled.contains("renderLayer") && match.demangled.contains("LayerSurface")) {
+            renderLayerFound = true;
             g_pGlobalState->renderLayerHook = HyprlandAPI::createFunctionHook(PHANDLE, match.address, (void*)hkRenderLayer);
-            if (g_pGlobalState->renderLayerHook)
-                g_pGlobalState->renderLayerHook->hook();
+            // createFunctionHook succeeds even when another plugin already owns the
+            // address; only hook() reports that, and m_original then stays null
+            if (g_pGlobalState->renderLayerHook && !g_pGlobalState->renderLayerHook->hook()) {
+                HyprlandAPI::removeFunctionHook(PHANDLE, g_pGlobalState->renderLayerHook);
+                g_pGlobalState->renderLayerHook = nullptr;
+            }
             break;
         }
     }
 
     if (!g_pGlobalState->renderLayerHook) {
         HyprlandAPI::addNotificationV2(PHANDLE, {
-            {"text", std::string("[hyprglass] Could not hook renderLayer — layer glass disabled")},
-            {"time", (uint64_t)5000},
-            {"color", CHyprColor{1.0, 0.8, 0.2, 1.0}},
-        });
-    }
-
-    // Hook damageSurface for live layer re-render on background content change
-    auto damageSurfaceMatches = HyprlandAPI::findFunctionsByName(PHANDLE, "damageSurface");
-    for (const auto& match : damageSurfaceMatches) {
-        if (match.demangled.contains("IHyprRenderer") && match.demangled.contains("damageSurface")) {
-            g_pGlobalState->damageSurfaceHook = HyprlandAPI::createFunctionHook(PHANDLE, match.address, (void*)hkDamageSurface);
-            if (g_pGlobalState->damageSurfaceHook)
-                g_pGlobalState->damageSurfaceHook->hook();
-            break;
-        }
-    }
-
-    if (!g_pGlobalState->damageSurfaceHook) {
-        HyprlandAPI::addNotificationV2(PHANDLE, {
-            {"text", std::string("[hyprglass] Could not hook damageSurface — live layer re-render disabled")},
+            {"text", std::string(renderLayerFound ?
+                "[hyprglass] Could not hook renderLayer (symbol found, hook failed — possibly already hooked by another plugin) — layer glass disabled" :
+                "[hyprglass] Could not hook renderLayer (symbol not found) — layer glass disabled")},
             {"time", (uint64_t)5000},
             {"color", CHyprColor{1.0, 0.8, 0.2, 1.0}},
         });
@@ -524,6 +453,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
         return;
 
     g_pGlobalState->listeners.clear();
+    LayerDamageObserver::setEnabled(false);
 
     g_pHyprRenderer->m_renderPass.removeAllOfType("CGlassPassElement");
     g_pHyprRenderer->m_renderPass.removeAllOfType("CGlassLayerPassElement");
@@ -538,11 +468,6 @@ APICALL EXPORT void PLUGIN_EXIT() {
     if (g_pGlobalState->renderLayerHook) {
         HyprlandAPI::removeFunctionHook(PHANDLE, g_pGlobalState->renderLayerHook);
         g_pGlobalState->renderLayerHook = nullptr;
-    }
-
-    if (g_pGlobalState->damageSurfaceHook) {
-        HyprlandAPI::removeFunctionHook(PHANDLE, g_pGlobalState->damageSurfaceHook);
-        g_pGlobalState->damageSurfaceHook = nullptr;
     }
 
     g_pGlobalState->layerSurfaces.clear();

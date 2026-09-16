@@ -5,6 +5,7 @@
 #include "ShaderManager.hpp"
 
 #include <hyprland/src/plugins/PluginAPI.hpp>
+#include <hyprland/src/protocols/core/Compositor.hpp>
 #include <hyprland/src/render/Framebuffer.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
@@ -70,10 +71,19 @@ struct SGlobalState {
             sceneGeneration[mon->m_id]++;
     }
 
+    // Surface-commit observation driving the layer live resample: the
+    // subscriptions that discover surfaces, and one commit/destroy pair per
+    // watched surface. Owned here for the same reason as `listeners`: PLUGIN_EXIT
+    // must drop them before render teardown.
+    struct SWatchedSurface {
+        Hyprutils::Signal::CHyprSignalListener commit;
+        Hyprutils::Signal::CHyprSignalListener destroy;
+    };
+    std::vector<Hyprutils::Signal::CHyprSignalListener>         observerListeners;
+    std::unordered_map<WP<CWLSurfaceResource>, SWatchedSurface> watchedSurfaces;
+
     // renderLayer hook
     CFunctionHook* renderLayerHook = nullptr;
-    // damageSurface hook (live layer re-render)
-    CFunctionHook* damageSurfaceHook = nullptr;
 };
 
 using Render::GL::g_pHyprOpenGL;
