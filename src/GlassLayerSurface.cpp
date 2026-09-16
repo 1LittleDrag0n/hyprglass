@@ -10,12 +10,26 @@
 #include <GLES3/gl32.h>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
+#include <hyprland/src/state/WorkspaceState.hpp>
 #include <hyprutils/math/Misc.hpp>
 
 static CBox transformedLayerBox(CBox pixelBox, PHLMONITOR monitor) {
     const auto transform = Math::wlTransformToHyprutils(Math::invertTransform(monitor->m_transform));
     pixelBox.transform(transform, monitor->m_transformedSize.x, monitor->m_transformedSize.y).noNegativeSize().round();
     return pixelBox;
+}
+
+// Scan every workspace of the monitor, not its active/special pointers: the
+// special pointer is already cleared while the old workspace animates away.
+static bool workspaceAnimating(PHLMONITOR monitor) {
+    for (const auto& ws : State::workspaceState()->workspaces()) {
+        if (ws->m_monitor != monitor)
+            continue;
+        if (ws->m_renderOffset->isBeingAnimated() || ws->m_alpha->isBeingAnimated())
+            return true;
+    }
+
+    return false;
 }
 
 CGlassLayerSurface::CGlassLayerSurface(PHLLS layerSurface)
@@ -211,11 +225,12 @@ void CGlassLayerSurface::sampleAndRedirect(PHLMONITOR monitor, float alpha) {
     // but no window moved behind us, we reuse the cached blurred background.
     // This skips the most expensive GPU work (blit + 6 blur passes).
     const uint64_t currentGeneration = g_pGlobalState->getSceneGeneration(monitor);
-    const auto activeWs = monitor->m_activeWorkspace;
+    // A workspace slide or fade moves the whole scene behind us without changing
+    // any window's own geometry, so no window decoration update reports it.
     const bool isAnimating = layerSurface->positionAnimation()->isBeingAnimated() ||
                              layerSurface->sizeAnimation()->isBeingAnimated() ||
                              layerSurface->alpha()[Desktop::View::LS_ALPHA_FADE]->isBeingAnimated() ||
-                             (activeWs && activeWs->m_renderOffset->isBeingAnimated());
+                             workspaceAnimating(monitor);
     const auto& config = g_pGlobalState->config;
     const bool forceLive = config.layersForceLiveResample && **config.layersForceLiveResample;
     const bool backgroundChanged = !m_hasCachedSample ||

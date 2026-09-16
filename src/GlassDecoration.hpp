@@ -33,7 +33,7 @@ class CGlassDecoration : public IHyprWindowDecoration {
     SP<Render::IFramebuffer> m_sampleFramebuffer;
     Vector2D     m_samplePaddingRatio;
 
-    // Track last rendered position/size to detect actual changes and seed damage
+    // Last geometry seen in updateWindow(), to detect real moves/resizes
     Vector2D m_lastPosition;
     Vector2D m_lastSize;
 
