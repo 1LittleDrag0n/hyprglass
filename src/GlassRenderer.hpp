@@ -2,7 +2,9 @@
 
 #include "PluginConfig.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <GLES3/gl32.h>
 #include <hyprland/src/desktop/DesktopTypes.hpp>
 #include <hyprland/src/render/Framebuffer.hpp>
@@ -20,6 +22,34 @@ inline constexpr int SAMPLE_PADDING_PX = 60;
 // resolution — weak blur at half-res shows visible pixelation.
 inline constexpr int   BLUR_DOWNSCALE_MAX       = 2;
 inline constexpr float BLUR_DOWNSCALE_THRESHOLD = 0.35f; // min blur_strength for downscale
+
+// Worst-case pixel radius, beyond a window's own box, of the raw texels the glass
+// pipeline reads to produce an output pixel at that edge: blur kernel reach + the
+// refraction pass's pull + chromatic aberration's extra spread. SAMPLE_PADDING_PX is
+// deliberately excluded — it is the extra area *blitted* around the window (already
+// folded into the padded bounding box the pass elements report to Hyprland, which is
+// what the live-blur margin below is checked against), not a read distance. Callers
+// compare this reach against Hyprland's own live-blur damage margin (1.5 *
+// CRenderPass::oneBlurRadius(), render/pass/Pass.cpp) — when the margin is smaller,
+// finalDamage discards texels this pipeline still samples.
+[[nodiscard]] constexpr float sampleReachPx(float blurStrength, int iterations, float chromaticAberration, float refractionStrength) {
+    const int   downscale   = blurStrength >= BLUR_DOWNSCALE_THRESHOLD ? BLUR_DOWNSCALE_MAX : 1;
+    const float blurRadius  = blurStrength * 12.0f / downscale; // matches renderPass() in GlassDecoration.cpp / GlassLayerSurface.cpp
+    const float tapsPerPass = std::min(std::ceil(blurRadius), 8.0f); // matches gaussianblur.frag's `min(int(ceil(blurRadius)), 8)` exactly (Shaders.hpp)
+    const float blurReachPx = tapsPerPass * static_cast<float>(downscale) * static_cast<float>(iterations);
+
+    // refractionPx = refractionStrength * 50.0 in the glass shader (Shaders.hpp). Negative
+    // strength (invalid but not rejected by config parsing) must not shrink the reach below
+    // the blur-only case, so it's floored at 0 here.
+    const float refractionPx = std::max(refractionStrength, 0.0f) * 50.0f;
+
+    // chromaSpread = chromaticAberration * 0.35 widens baseOffset (== refractionPx at
+    // the edge) by that fraction (Shaders.hpp) — mirrored here rather than flattened
+    // into a constant so callers with a higher chromatic_aberration get a truthful reach.
+    const float chromaticSpreadPx = chromaticAberration * 0.35f * refractionPx;
+
+    return blurReachPx + refractionPx + chromaticSpreadPx;
+}
 
 // Must match the `regionRects[16]` array size declared in Shaders.hpp.
 inline constexpr int MAX_REGION_RECTS = 16;

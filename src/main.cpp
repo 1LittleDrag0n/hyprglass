@@ -23,6 +23,7 @@
 #include <hyprland/src/event/EventBus.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <optional>
 #include <sstream>
@@ -466,6 +467,73 @@ static void hkRenderLayer(Render::IHyprRenderer* thisptr, PHLLS layerSurface, PH
 }
 
 
+// ── Margin safety check ──────────────────────────────────────────────────────
+
+// The (margin, reach) pair from the last warning. A config.reloaded that leaves
+// both Hyprland's blur settings and the plugin's own blur/refraction settings
+// unchanged recomputes the same pair, so this suppresses renotifying every reload.
+static std::optional<std::pair<float, float>> lastWarnedMarginReach;
+
+// Hyprland's live-blur damage expansion (CRenderPass::render(), render/pass/Pass.cpp)
+// is the only thing keeping the padded box this pipeline reads inside finalDamage.
+// When the plugin's own reach exceeds that margin, finalDamage discards texels the
+// glass shader still samples outside it, showing stale content at the window's
+// edge instead of failing loudly.
+static void checkBlurMarginSafety() {
+    if (!g_pGlobalState)
+        return;
+
+    // Read the same way as the decoration:shadow:enabled check below: the plugin
+    // has no cached pointer for Hyprland's own config, only for its own.
+    const auto blurSizeValue   = Config::mgr()->getConfigValue("decoration:blur:size");
+    const auto blurPassesValue = Config::mgr()->getConfigValue("decoration:blur:passes");
+    auto* const PBLURSIZE   = reinterpret_cast<Hyprlang::INT* const*>(blurSizeValue.dataptr);
+    auto* const PBLURPASSES = reinterpret_cast<Hyprlang::INT* const*>(blurPassesValue.dataptr);
+    if (!PBLURSIZE || !PBLURPASSES)
+        return;
+
+    const auto& config = g_pGlobalState->config;
+    if (!config.global.blurStrength || !config.global.blurIterations || !config.global.chromaticAberration || !config.global.refractionStrength)
+        return;
+
+    // Reproduces CRenderPass::oneBlurRadius() (render/pass/Pass.cpp) exactly.
+    const int64_t blurSize      = std::clamp<int64_t>(**PBLURSIZE, 1, 40);
+    const int64_t blurPasses    = std::clamp<int64_t>(**PBLURPASSES, 1, 8);
+    const float   oneBlurRadius = static_cast<float>(blurSize) * std::pow(2.0f, static_cast<float>(blurPasses));
+    const float   margin        = 1.5f * oneBlurRadius;
+
+    const float blurStrength = **config.global.blurStrength;
+    // Mirrors the clamp renderPass() applies to this same value at draw time
+    // (GlassDecoration.cpp, GlassLayerSurface.cpp): the check must use the
+    // iteration count that actually runs, not the raw unclamped config value.
+    const int   iterations          = std::clamp(static_cast<int>(**config.global.blurIterations), 1, 5);
+    const float chromaticAberration = **config.global.chromaticAberration;
+    // Presets (e.g. the built-in "glass" preset, refraction_strength = 8.0) can raise
+    // refraction_strength above this global value per window; this check only covers
+    // the global layer, matching blurStrength/blurIterations/chromaticAberration above.
+    const float refractionStrength = **config.global.refractionStrength;
+    const float reach              = GlassRenderer::sampleReachPx(blurStrength, iterations, chromaticAberration, refractionStrength);
+
+    if (margin >= reach) {
+        lastWarnedMarginReach.reset(); // safe again; a later regression warns again
+        return;
+    }
+
+    const auto currentPair = std::pair{margin, reach};
+    if (lastWarnedMarginReach == currentPair)
+        return; // already warned for this exact margin/reach combination
+    lastWarnedMarginReach = currentPair;
+
+    HyprlandAPI::addNotificationV2(PHANDLE, {
+        {"text", std::format(
+            "[hyprglass] decoration:blur:size={} / decoration:blur:passes={} give Hyprland only {:.0f}px of live-blur damage margin, "
+            "but the glass effect can read up to {:.0f}px beyond a window's edge — raise blur:size/blur:passes or expect stale edges under motion.",
+            blurSize, blurPasses, margin, reach)},
+        {"time", (uint64_t)8000},
+        {"color", CHyprColor{1.0, 0.8, 0.2, 1.0}},
+    });
+}
+
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
     return HYPRLAND_API_VERSION;
 }
@@ -548,6 +616,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         parseLayerNamespaceFilters();
         commitPendingLayers(); // merge Lua layer() calls on top of string config
         validateConfig();
+        checkBlurMarginSafety();
         // config values are only valid here: reloadConfig() is asynchronous
         refreshSurfaceObserver();
     }));
@@ -606,6 +675,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     commitPendingLayers();
     validateConfig();
     refreshSurfaceObserver();
+    checkBlurMarginSafety();
 
     return {std::string(PLUGIN_NAME), std::string(PLUGIN_DESCRIPTION), std::string(PLUGIN_AUTHOR), std::string(PLUGIN_VERSION)};
 }
