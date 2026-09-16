@@ -70,9 +70,14 @@ void CGlassDecoration::onFullscreenStateChanged() {
     damageEntire();
 }
 
+static float selfSampleFor(const SResolveContext& ctx) {
+    return std::clamp(resolvePresetFloat(ctx, &SPresetValues::selfSample, &SOverridableConfig::selfSample), 0.0f, 1.0f);
+}
+
 bool CGlassDecoration::resolveEnabled() const {
     const auto& config = g_pGlobalState->config;
     const bool globalEnabled = config.enabled && **config.enabled;
+    const bool skipOpaque    = config.skipOpaqueWindows && **config.skipOpaqueWindows;
 
     try {
         const auto window = m_window.lock();
@@ -84,6 +89,17 @@ bool CGlassDecoration::resolveEnabled() const {
                 return false;
             if (tags.isTagged(std::string(TAG_ENABLED)))
                 return true;
+        }
+
+        // Nothing behind an opaque window is visible, unless the window
+        // self-samples: then the glass shows the window's own content, which
+        // does change, so the opaque-skip must yield to it.
+        if (skipOpaque && window && window->opaque()) {
+            const bool         isDark = resolveThemeIsDark();
+            const std::string  preset = resolvePresetName();
+            const SResolveContext ctx = {preset, isDark, config, g_pGlobalState->customPresets};
+            if (selfSampleFor(ctx) <= 0.0f)
+                return false;
         }
     } catch (...) {}
 
@@ -128,10 +144,6 @@ std::string CGlassDecoration::resolvePresetName() const {
     } catch (...) {}
 
     return "default";
-}
-
-static float selfSampleFor(const SResolveContext& ctx) {
-    return std::clamp(resolvePresetFloat(ctx, &SPresetValues::selfSample, &SOverridableConfig::selfSample), 0.0f, 1.0f);
 }
 
 SDecorationPositioningInfo CGlassDecoration::getPositioningInfo() {

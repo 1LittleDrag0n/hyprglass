@@ -45,10 +45,11 @@ enum class ELayerMaskMode { AUTO, ALPHA, REGION };
 namespace ConfigKeys {
 
 // Global-only
-inline constexpr auto ENABLED            = "plugin:hyprglass:enabled";
-inline constexpr auto DEFAULT_THEME      = "plugin:hyprglass:default_theme";
-inline constexpr auto DEFAULT_PRESET     = "plugin:hyprglass:default_preset";
-inline constexpr auto MANAGE_WINDOW_BLUR = "plugin:hyprglass:manage_window_blur";
+inline constexpr auto ENABLED             = "plugin:hyprglass:enabled";
+inline constexpr auto DEFAULT_THEME       = "plugin:hyprglass:default_theme";
+inline constexpr auto DEFAULT_PRESET      = "plugin:hyprglass:default_preset";
+inline constexpr auto MANAGE_WINDOW_BLUR  = "plugin:hyprglass:manage_window_blur";
+inline constexpr auto SKIP_OPAQUE_WINDOWS = "plugin:hyprglass:skip_opaque_windows";
 
 // Preset keyword, registered as unscoped because Hyprlang does not dispatch
 // scoped keyword handlers inside the plugin special category.
@@ -261,12 +262,15 @@ inline std::string_view readStringConfig(const StringConfigPtr& ptr) {
 }
 
 struct SPluginConfig {
-    Hyprlang::INT* const* enabled          = nullptr;
+    Hyprlang::INT* const* enabled           = nullptr;
     // Glass replaces Hyprland's blur for glassed windows: when set, the plugin
     // marks them with the noblur window property so Hyprland composites them
     // against the live framebuffer (which contains the glass) instead of its
     // pre-frame cached blur.
-    Hyprlang::INT* const* manageWindowBlur = nullptr;
+    Hyprlang::INT* const* manageWindowBlur  = nullptr;
+    // Skip glass for windows CWindow::opaque() reports as opaque: nothing behind
+    // them is visible, so sampling and blurring their background is wasted work.
+    Hyprlang::INT* const* skipOpaqueWindows = nullptr;
     StringConfigPtr      defaultTheme;
     StringConfigPtr      defaultPreset;
 
