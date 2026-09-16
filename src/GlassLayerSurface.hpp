@@ -43,6 +43,13 @@ class CGlassLayerSurface {
     bool         m_backgroundDirty = false;
     std::chrono::steady_clock::time_point m_lastDirtyMark{};
 
+    // Set at the end of sampleAndRedirect() when currentFB was actually redirected
+    // to the temp FBO this frame, cleared by compositeAndRestore() after it reads it.
+    // Guards against compositing against a stale temp FBO when the render pass
+    // discarded the pre-surface element (see disableSimplification() in
+    // GlassLayerPassElement.cpp).
+    bool         m_redirectedThisFrame = false;
+
     void damageSampleRegion();
 
     // Track last position/size to detect movement and expand damage

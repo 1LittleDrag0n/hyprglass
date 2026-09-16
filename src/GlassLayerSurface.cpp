@@ -298,6 +298,8 @@ void CGlassLayerSurface::sampleAndRedirect(PHLMONITOR monitor, float alpha) {
         glClear(GL_COLOR_BUFFER_BIT);
         g_pHyprOpenGL->scissor(nullptr);
     }
+
+    m_redirectedThisFrame = true;
 }
 
 void CGlassLayerSurface::compositeAndRestore(PHLMONITOR monitor, float alpha, EMaskSource maskSource) {
@@ -307,6 +309,15 @@ void CGlassLayerSurface::compositeAndRestore(PHLMONITOR monitor, float alpha, EM
         glBindFramebuffer(GL_FRAMEBUFFER, dynamic_cast<Render::GL::CGLFramebuffer*>(m_savedCurrentFB.get())->getFBID());
         m_savedCurrentFB.reset();
     }
+
+    // The render pass can discard the pre-surface element without discarding
+    // this one (its bounding box is evaluated first, against a superset of the
+    // damage the pre-surface element sees — see disableSimplification() in
+    // GlassLayerPassElement.cpp). Without this flag we'd mask/composite against
+    // whatever m_surfaceTempFramebuffer held from an earlier frame.
+    if (!m_redirectedThisFrame)
+        return;
+    m_redirectedThisFrame = false;
 
     auto& shaderManager = g_pGlobalState->shaderManager;
     if (!shaderManager.isInitialized() || !m_hasCachedSample)

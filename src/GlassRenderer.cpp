@@ -94,10 +94,14 @@ void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IF
     const float xScale = map.scaleX;
     const float yScale = map.scaleY;
 
-    if (srcX0 < 0) { dstX0 += static_cast<int>(-srcX0 * xScale); srcX0 = 0; }
-    if (srcY0 < 0) { dstY0 += static_cast<int>(-srcY0 * yScale); srcY0 = 0; }
-    if (srcX1 > framebufferWidth)  { dstX1 -= static_cast<int>((srcX1 - framebufferWidth) * xScale);  srcX1 = framebufferWidth; }
-    if (srcY1 > framebufferHeight) { dstY1 -= static_cast<int>((srcY1 - framebufferHeight) * yScale); srcY1 = framebufferHeight; }
+    // Tracks whether any clamp shrank the destination rect below the full FBO,
+    // which is the only case that can leave uninitialized texels after the blit.
+    bool destinationClamped = false;
+
+    if (srcX0 < 0) { dstX0 += static_cast<int>(-srcX0 * xScale); srcX0 = 0; destinationClamped = true; }
+    if (srcY0 < 0) { dstY0 += static_cast<int>(-srcY0 * yScale); srcY0 = 0; destinationClamped = true; }
+    if (srcX1 > framebufferWidth)  { dstX1 -= static_cast<int>((srcX1 - framebufferWidth) * xScale);  srcX1 = framebufferWidth; destinationClamped = true; }
+    if (srcY1 > framebufferHeight) { dstY1 -= static_cast<int>((srcY1 - framebufferHeight) * yScale); srcY1 = framebufferHeight; destinationClamped = true; }
 
     // Padding ratio is relative to the logical content area (resolution-independent)
     outPaddingRatio = Vector2D(
@@ -110,11 +114,15 @@ void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IF
     // DRAW framebuffer, causing partial writes and stale noise artifacts.
     g_pHyprOpenGL->setCapStatus(GL_SCISSOR_TEST, false);
 
-    // Clear the sample FBO before blitting. Clamped regions (near edges)
-    // would otherwise contain uninitialized GPU memory (pink artifacts).
-    glBindFramebuffer(GL_FRAMEBUFFER, fbId(sampleFramebuffer));
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    // Clear the sample FBO before blitting only when the blit destination
+    // doesn't cover the whole FBO. Clamped regions (near monitor edges)
+    // would otherwise leave uninitialized GPU memory (pink artifacts) outside
+    // the blit; a full-rect blit overwrites every texel, so the clear is redundant.
+    if (destinationClamped) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbId(sampleFramebuffer));
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbId(sourceFramebuffer));
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbId(sampleFramebuffer));

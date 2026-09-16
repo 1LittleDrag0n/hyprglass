@@ -374,6 +374,28 @@ For windows, the plugin integrates with Hyprland's render pass system as a `DECO
 hyprctl plugin unload /path/to/hyprglass.so
 ```
 
+## Performance diagnostics
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `debug:mode` | string | `off` | `off`, `hints_only` (render pass hints only, no GL work — isolates render-pass cost), or `gl_work_only` (runs the GL pipeline but drops the live-blur hint — isolates pipeline cost from render-pass damage-expansion cost). For A/B GPU measurement; leave `off` for normal use. |
+| `debug:timers` | bool | `false` (`0` in .conf) | Time each pipeline stage on the GPU (`GL_EXT_disjoint_timer_query`) and report per-stage averages in `hyprctl hyprglass stats`. No effect if the driver doesn't support the extension. |
+
+```bash
+hyprctl hyprglass stats          # per-monitor counters and (if enabled) stage timers
+hyprctl hyprglass stats reset    # zero every counter and accumulated timer
+hyprctl j/hyprglass stats        # same, as JSON
+```
+
+```
+hyprglass stats
+  stage timers: off (plugin:hyprglass:debug:timers = 0)
+
+  monitor        frames  win_draws  opaque_skip  layer_draws  cache_hit  cache_miss  blur_pass  sampled_mpx  glass_mpx
+  eDP-1            7212       3401         5122         1560       1420          92       5520        41.30      18.77
+  eDP-1          per frame: 0.47 win draws, 0.22 layer draws, 0.77 blur passes, 0.006 sampled mpx, 0.003 glass mpx
+```
+
 ## Notes
 
 - The plugin requires Hyprland shadows to be present in the render pipeline. It **auto-enables them** at load time if disabled — shadow visual values (range, color…) can be zero, only the decoration's presence matters.

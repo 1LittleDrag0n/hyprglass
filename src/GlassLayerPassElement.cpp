@@ -49,5 +49,14 @@ bool CGlassLayerPassElement::needsPrecomputeBlur() {
 }
 
 bool CGlassLayerPassElement::disableSimplification() {
-    return m_data.layerState && m_data.layerState->getLayerSurface();
+    // Left enabled, including under debug:mode = gl_work_only: an element whose
+    // padded box misses the render pass's damage is safely discarded here — no
+    // partial-box artifact, same reasoning as CGlassPassElement. The post-surface
+    // composite element is evaluated first in CRenderPass::simplify()'s
+    // back-to-front walk, against a larger remaining-damage region than this
+    // element sees, so in practice it is discarded whenever this one is.
+    // CGlassLayerSurface::m_redirectedThisFrame is the safety net for the
+    // remaining case: it makes compositeAndRestore() bail out instead of
+    // compositing against a temp FBO this frame never redirected into.
+    return false;
 }

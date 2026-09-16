@@ -52,11 +52,10 @@ std::optional<CBox> CGlassPassElement::boundingBox() {
 }
 
 bool CGlassPassElement::needsLiveBlur() {
-    // Windows need live blur so the render pass fully re-renders the
-    // background behind the glass before we sample it. Without this,
-    // partial damage (e.g. typing in a window below) leaves stale pixels
-    // in the padded sampling region, causing blinking artifacts.
-    // Layers don't need this — they have their own blur cache with
+    // Keeps the background under our padded box rendered inside the render
+    // pass's damage, so sampling never picks up stale pixels left by partial
+    // damage from something behind the window (e.g. typing in a window
+    // below). Layers don't need this — they have their own blur cache with
     // scene generation tracking.
     //
     // Must agree with boundingBox() on whether a box exists: Hyprland's
@@ -71,5 +70,9 @@ bool CGlassPassElement::needsPrecomputeBlur() {
 }
 
 bool CGlassPassElement::disableSimplification() {
-    return m_data.decoration.valid() && m_data.decoration->getOwner();
+    // Left enabled, including under debug:mode = gl_work_only: an element
+    // whose padded box misses the render pass's damage is safely discarded.
+    // One that survives discard still draws its whole box, so needsLiveBlur
+    // above is what keeps the background beneath that box correct, not this.
+    return false;
 }
