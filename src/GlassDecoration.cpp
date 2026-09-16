@@ -151,29 +151,14 @@ void CGlassDecoration::draw(PHLMONITOR monitor, float const& alpha) {
     CGlassPassElement::SGlassPassData data{m_self, alpha};
     g_pHyprRenderer->m_renderPass.add(makeUnique<CGlassPassElement>(data));
 
+    // A slide translates the scene under us without any geometry change, and
+    // Hyprland's per-tick window damage carries none of our sampling padding.
+    // Damage only: no cache state may be touched from a render.
     const auto window = m_window.lock();
-    if (window) {
+    if (window && !window->m_pinned) {
         const auto workspace = window->m_workspace;
-
-        const bool wsAnimating = workspace && !window->m_pinned && workspace->m_renderOffset->isBeingAnimated();
-        if (wsAnimating)
+        if (workspace && workspace->m_renderOffset->isBeingAnimated())
             damageEntire();
-
-        const auto currentPosition = window->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
-        const auto currentSize = window->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
-        const bool moved = currentPosition != m_lastPosition || currentSize != m_lastSize;
-        if (moved) {
-            damageEntire();
-            m_lastPosition = currentPosition;
-            m_lastSize = currentSize;
-        }
-
-        // Bump layer cache only for actual scene changes (window moved/animating),
-        // NOT from damageEntire() which fires in the damage system feedback path.
-        if (moved || wsAnimating) {
-            if (auto mon = window->m_monitor.lock())
-                g_pGlobalState->bumpSceneGeneration(mon);
-        }
     }
 }
 
@@ -248,8 +233,47 @@ eDecorationType CGlassDecoration::getDecorationType() {
     return DECORATION_CUSTOM;
 }
 
-void CGlassDecoration::updateWindow(PHLWINDOW window) {
+// Driven by the real position/size variables and by map/layout/rule changes,
+// unlike draw(), which sees whatever geometry the caller substituted. The
+// PHLWINDOW argument is ignored on purpose: a third-party replay passes its own
+// handle, while our state is keyed on the owner we were constructed with.
+void CGlassDecoration::updateWindow(PHLWINDOW) {
+    // A plugin may replay this mid-render under substituted geometry. mainFB is
+    // set exactly between begin() and end(); currentFB also follows binds taken
+    // outside a pass. Above the m_last* store, so the next real update bumps.
+    if (g_pHyprRenderer->m_renderData.mainFB)
+        return;
+
     damageEntire();
+
+    if (!g_pGlobalState || !resolveEnabled())
+        return;
+
+    const auto ownWindow = m_window.lock();
+    if (!ownWindow)
+        return;
+
+    const auto monitor = ownWindow->m_monitor.lock();
+    if (!monitor)
+        return;
+
+    const auto currentPosition = ownWindow->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+    const auto currentSize     = ownWindow->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+    if (currentPosition == m_lastPosition && currentSize == m_lastSize)
+        return;
+
+    m_lastPosition = currentPosition;
+    m_lastSize     = currentSize;
+
+    // A workspace the monitor is not rendering changes nothing behind a glassed
+    // layer; switching to it bumps on its own. Same predicate Hyprland renders
+    // by: a slide or fade keeps drawing an already-invisible workspace.
+    const auto workspace = ownWindow->m_workspace;
+    if (workspace && !workspace->m_visible && !workspace->m_forceRendering && !workspace->m_renderOffset->isBeingAnimated() &&
+        !workspace->m_alpha->isBeingAnimated() && !ownWindow->m_pinned)
+        return;
+
+    g_pGlobalState->bumpSceneGeneration(monitor);
 }
 
 void CGlassDecoration::damageEntire() {

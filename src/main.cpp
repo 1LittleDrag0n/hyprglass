@@ -218,6 +218,19 @@ struct SLayerBlurSuppression {
 
 using renderLayerFn = void (*)(Render::IHyprRenderer*, PHLLS, PHLMONITOR, const Time::steady_tp&, bool, bool);
 
+// A renderLayer call that is not the monitor's own layer pass: a caller
+// rendering into its own framebuffer, or one that set a render modifier before
+// calling us (only observable from inside pass execution — a modifier queued as
+// a hints element is not applied yet while the pass is still being built).
+static bool isForeignLayerRender() {
+    const auto& renderData = g_pHyprRenderer->m_renderData;
+
+    if (renderData.mainFB && renderData.currentFB != renderData.mainFB)
+        return true;
+
+    return renderData.renderModif.enabled && !renderData.renderModif.modifs.empty();
+}
+
 static void hkRenderLayer(Render::IHyprRenderer* thisptr, PHLLS layerSurface, PHLMONITOR monitor,
                            const Time::steady_tp& now, bool popups, bool lockscreen) {
     const auto& config = g_pGlobalState->config;
@@ -231,6 +244,14 @@ static void hkRenderLayer(Render::IHyprRenderer* thisptr, PHLLS layerSurface, PH
     // starts transparent/black, so sampling it as a background can bake a black
     // rectangle into the fade-out snapshot.
     if (g_pHyprRenderer->m_bRenderingSnapshot) {
+        ((renderLayerFn)g_pGlobalState->renderLayerHook->m_original)(thisptr, layerSurface, monitor, now, popups, lockscreen);
+        return;
+    }
+
+    // Leave a foreign render entirely alone: no cache creation, no generation bump,
+    // no layer registration. Its framebuffer holds content the real frame must not
+    // inherit, and its geometry is not the one our caches are keyed on.
+    if (isForeignLayerRender()) {
         ((renderLayerFn)g_pGlobalState->renderLayerHook->m_original)(thisptr, layerSurface, monitor, now, popups, lockscreen);
         return;
     }
