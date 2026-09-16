@@ -1,5 +1,6 @@
 #include "GlassLayerSurface.hpp"
 #include "BuiltInPresets.hpp"
+#include "Diagnostics.hpp"
 #include "GlassRenderer.hpp"
 #include "Globals.hpp"
 #include "LayerGeometry.hpp"
@@ -220,6 +221,13 @@ void CGlassLayerSurface::sampleAndRedirect(PHLMONITOR monitor, float alpha) {
 
     CBox transformBox = transformedLayerBox(*layerBox, monitor);
 
+    // Brackets everything below, including the conditional resample and the
+    // temp-FBO redirect/clear that always runs: GL forbids a concurrent
+    // GL_TIME_ELAPSED query, so on a cache miss the SampleBackground/
+    // BlurBackground brackets those calls open underneath this one just no-op.
+    Diagnostics::CScopedStageTimer stageTimer(Diagnostics::EStage::LayerSample);
+    const MONITORID monitorId = monitor ? monitor->m_id : -1; // -1 mirrors Hyprland's own MONITOR_INVALID
+
     // Decide whether we need to re-sample and re-blur the background.
     // When only the layer surface content changed (e.g. waybar clock tick)
     // but no window moved behind us, we reuse the cached blurred background.
@@ -241,7 +249,10 @@ void CGlassLayerSurface::sampleAndRedirect(PHLMONITOR monitor, float alpha) {
         // During fade-out, re-sampling captures stale pixels. Reuse cached sample.
         if (!m_hasCachedSample)
             return;
+        Diagnostics::recordLayerCacheHit(monitorId);
     } else if (backgroundChanged) {
+        Diagnostics::recordLayerCacheMiss(monitorId);
+
         const bool isDark          = resolveThemeIsDark();
         const std::string preset   = resolvePresetName();
         const SResolveContext ctx  = {preset, isDark, g_pGlobalState->config, g_pGlobalState->customPresets};
@@ -258,8 +269,10 @@ void CGlassLayerSurface::sampleAndRedirect(PHLMONITOR monitor, float alpha) {
         m_hasCachedSample      = true;
         m_lastSceneGeneration  = currentGeneration;
         m_backgroundDirty      = false;
+    } else {
+        // background unchanged, reuse cached blur — skip 7 GPU operations
+        Diagnostics::recordLayerCacheHit(monitorId);
     }
-    // else: background unchanged, reuse cached blur — skip 7 GPU operations
 
     // Redirect surface rendering to a temp FBO cleared to transparent.
     // The original renderLayer (called between pre/post elements) will render
@@ -334,6 +347,13 @@ void CGlassLayerSurface::compositeAndRestore(PHLMONITOR monitor, float alpha, EM
     auto layerBox = LayerGeometry::computeLayerBox(layerSurface, monitor);
     if (!layerBox)
         return;
+
+    // Brackets mask setup + the applyGlassEffect call below; that call's own
+    // ApplyGlassEffect bracket sees this one already open and no-ops instead
+    // of nesting (GL forbids concurrent GL_TIME_ELAPSED queries).
+    Diagnostics::CScopedStageTimer stageTimer(Diagnostics::EStage::LayerComposite);
+    if (monitor)
+        Diagnostics::recordLayerGlassDraw(monitor->m_id);
 
     CBox rawBox       = *layerBox;
     CBox transformBox = transformedLayerBox(rawBox, monitor);

@@ -1,3 +1,4 @@
+#include "Diagnostics.hpp"
 #include "GlassDecoration.hpp"
 #include "GlassLayerCompositeElement.hpp"
 #include "GlassLayerPassElement.hpp"
@@ -210,6 +211,8 @@ static void onRenderStage(eRenderStage stage) {
             // which emits no RENDER_PRE_WINDOWS
             ++g_pGlobalState->frameSerial;
             g_pGlobalState->dedupe.reset();
+            if (const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock())
+                Diagnostics::recordFrame(monitor->m_id);
             break;
         case RENDER_PRE_WINDOWS: g_pGlobalState->dedupe.resetEpoch(); break;
         case RENDER_PRE_WINDOW: beginWindowRender(); break;
@@ -552,6 +555,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     registerConfig(PHANDLE);
     initConfigPointers(PHANDLE, g_pGlobalState->config);
+    Diagnostics::registerHyprCtlCommand(PHANDLE);
 
     // Shadows must be enabled for the glass effect to sample the correct background.
     // Force-enable if the user has disabled them.
@@ -612,6 +616,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
 
     g_pGlobalState->listeners.clear();
     LayerDamageObserver::setEnabled(false);
+    Diagnostics::unregisterHyprCtlCommand(PHANDLE);
 
     // drop the redirect and the sink's elements while the plugin is still mapped
     g_pGlobalState->dedupe.reset();
@@ -619,6 +624,8 @@ APICALL EXPORT void PLUGIN_EXIT() {
     g_pHyprRenderer->m_renderPass.removeAllOfType("CGlassPassElement");
     g_pHyprRenderer->m_renderPass.removeAllOfType("CGlassLayerPassElement");
     g_pHyprRenderer->m_renderPass.removeAllOfType("CGlassLayerCompositeElement");
+
+    Diagnostics::shutdown();
 
     for (auto& decoration : g_pGlobalState->decorations) {
         if (auto* deco = decoration.get())

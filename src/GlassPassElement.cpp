@@ -1,6 +1,7 @@
 #include "GlassPassElement.hpp"
 #include "GlassDecoration.hpp"
 #include "Globals.hpp"
+#include "PluginConfig.hpp"
 #include "WindowGeometry.hpp"
 
 #include <cmath>
@@ -9,6 +10,12 @@ CGlassPassElement::CGlassPassElement(const SGlassPassData& data)
     : m_data(data) {}
 
 std::vector<UP<IPassElement>> CGlassPassElement::draw() {
+    // debug:mode = hints_only: keep every hint below (damage, live blur,
+    // simplification bypass) but do none of the GL work, to isolate the
+    // render pass's own cost from the glass pipeline's.
+    if (currentDebugMode() == EDebugMode::HINTS_ONLY)
+        return {};
+
     if (!m_data.decoration.valid())
         return {};
 
@@ -52,6 +59,12 @@ std::optional<CBox> CGlassPassElement::boundingBox() {
 }
 
 bool CGlassPassElement::needsLiveBlur() {
+    // debug:mode = gl_work_only: run the GL pipeline but withhold these
+    // hints, isolating their render-pass cost (full re-render) from the
+    // pipeline's own GL cost.
+    if (currentDebugMode() == EDebugMode::GL_WORK_ONLY)
+        return false;
+
     // Keeps the background under our padded box rendered inside the render
     // pass's damage, so sampling never picks up stale pixels left by partial
     // damage from something behind the window (e.g. typing in a window

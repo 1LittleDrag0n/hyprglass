@@ -67,9 +67,20 @@ class CGlassDecoration : public IHyprWindowDecoration {
     void updateNoBlurProp(bool glassEnabled);
     void withdrawNoBlur();
 
-    [[nodiscard]] bool        resolveEnabled() const;
-    [[nodiscard]] bool        resolveThemeIsDark() const;
-    [[nodiscard]] std::string resolvePresetName() const;
+    // The reason resolveEnabled() reached its answer, so callers can
+    // attribute a Diagnostics counter to the actual cause instead of
+    // re-deriving "is it opaque" independently — a window can be opaque and
+    // still disabled for another reason (tag, global config) that took
+    // precedence, and re-deriving would mis-attribute those to opaque-skip.
+    enum class EEnabledResolution {
+        Enabled,
+        Disabled,              // hyprglass_disabled tag, or plugin:hyprglass:enabled = 0
+        DisabledBecauseOpaque, // skip_opaque_windows and the window is opaque
+    };
+
+    [[nodiscard]] EEnabledResolution resolveEnabled() const;
+    [[nodiscard]] bool               resolveThemeIsDark() const;
+    [[nodiscard]] std::string        resolvePresetName() const;
 
     friend class CGlassPassElement;
 };

@@ -1,5 +1,6 @@
 #include "GlassDecoration.hpp"
 #include "BuiltInPresets.hpp"
+#include "Diagnostics.hpp"
 #include "GlassPassElement.hpp"
 #include "GlassRenderer.hpp"
 #include "Globals.hpp"
@@ -74,7 +75,7 @@ static float selfSampleFor(const SResolveContext& ctx) {
     return std::clamp(resolvePresetFloat(ctx, &SPresetValues::selfSample, &SOverridableConfig::selfSample), 0.0f, 1.0f);
 }
 
-bool CGlassDecoration::resolveEnabled() const {
+CGlassDecoration::EEnabledResolution CGlassDecoration::resolveEnabled() const {
     const auto& config = g_pGlobalState->config;
     const bool globalEnabled = config.enabled && **config.enabled;
     const bool skipOpaque    = config.skipOpaqueWindows && **config.skipOpaqueWindows;
@@ -86,10 +87,16 @@ bool CGlassDecoration::resolveEnabled() const {
             // isTagged() already matches dynamic tags ("tag*") — no stripping needed here.
             // Disabled tag wins over enabled tag if both are present.
             if (tags.isTagged(std::string(TAG_DISABLED)))
-                return false;
+                return EEnabledResolution::Disabled;
             if (tags.isTagged(std::string(TAG_ENABLED)))
-                return true;
+                return EEnabledResolution::Enabled;
         }
+
+        // A global disable must pre-empt the opaque-skip check below: otherwise
+        // an opaque window with the plugin off entirely would still resolve to
+        // DisabledBecauseOpaque and inflate the opaque-skip counter in draw().
+        if (!globalEnabled)
+            return EEnabledResolution::Disabled;
 
         // Nothing behind an opaque window is visible, unless the window
         // self-samples: then the glass shows the window's own content, which
@@ -99,11 +106,11 @@ bool CGlassDecoration::resolveEnabled() const {
             const std::string  preset = resolvePresetName();
             const SResolveContext ctx = {preset, isDark, config, g_pGlobalState->customPresets};
             if (selfSampleFor(ctx) <= 0.0f)
-                return false;
+                return EEnabledResolution::DisabledBecauseOpaque;
         }
     } catch (...) {}
 
-    return globalEnabled;
+    return globalEnabled ? EEnabledResolution::Enabled : EEnabledResolution::Disabled;
 }
 
 bool CGlassDecoration::resolveThemeIsDark() const {
@@ -190,10 +197,17 @@ void CGlassDecoration::draw(PHLMONITOR monitor, float const& alpha) {
     if (!g_pGlobalState)
         return;
 
-    const bool enabled = resolveEnabled();
+    const auto enabledResolution = resolveEnabled();
+    const bool enabled = enabledResolution == EEnabledResolution::Enabled;
     updateNoBlurProp(enabled);
     if (!enabled) {
         m_lastSelfSample = 0.0f;
+
+        // Only count a skip that resolveEnabled() itself attributes to
+        // skip_opaque_windows — a tag or global-disable skip doesn't have a
+        // counter of its own (see EEnabledResolution) and isn't counted here.
+        if (monitor && enabledResolution == EEnabledResolution::DisabledBecauseOpaque)
+            Diagnostics::recordWindowOpaqueSkipped(monitor->m_id);
         return;
     }
 
@@ -233,14 +247,11 @@ void CGlassDecoration::renderPass(PHLMONITOR monitor, const float& alpha) {
     if (!optBox)
         return;
 
-    CBox windowBox    = *optBox;
-    CBox transformBox = windowBox;
+    if (monitor)
+        Diagnostics::recordWindowGlassDraw(monitor->m_id);
 
-    const auto transform = Math::wlTransformToHyprutils(
-        Math::invertTransform(g_pHyprRenderer->m_renderData.pMonitor->m_transform));
-    transformBox.transform(transform,
-        g_pHyprRenderer->m_renderData.pMonitor->m_transformedSize.x,
-        g_pHyprRenderer->m_renderData.pMonitor->m_transformedSize.y);
+    CBox windowBox    = *optBox;
+    CBox transformBox = WindowGeometry::applyMonitorTransform(windowBox, monitor);
 
     const bool isDark          = resolveThemeIsDark();
     const std::string preset   = resolvePresetName();
@@ -308,7 +319,7 @@ void CGlassDecoration::updateWindow(PHLWINDOW) {
 
     damageEntire();
 
-    if (!g_pGlobalState || !resolveEnabled())
+    if (!g_pGlobalState || resolveEnabled() != EEnabledResolution::Enabled)
         return;
 
     const auto ownWindow = m_window.lock();

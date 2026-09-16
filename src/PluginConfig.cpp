@@ -40,12 +40,29 @@ std::optional<ELayerMaskMode> parseLayerMaskMode(std::string_view value) {
     return std::nullopt;
 }
 
+std::optional<EDebugMode> parseDebugMode(std::string_view value) {
+    if (value == "off")          return EDebugMode::OFF;
+    if (value == "hints_only")   return EDebugMode::HINTS_ONLY;
+    if (value == "gl_work_only") return EDebugMode::GL_WORK_ONLY;
+    return std::nullopt;
+}
+
+EDebugMode currentDebugMode() {
+    if (!g_pGlobalState)
+        return EDebugMode::OFF;
+    return parseDebugMode(readStringConfig(g_pGlobalState->config.debugMode)).value_or(EDebugMode::OFF);
+}
+
 void registerConfig(HANDLE handle) {
     addConfigValue<Config::Values::Int>(handle, ConfigKeys::ENABLED, Config::INTEGER{1});
     addConfigValue<Config::Values::Int>(handle, ConfigKeys::MANAGE_WINDOW_BLUR, Config::INTEGER{1});
     addConfigValue<Config::Values::Int>(handle, ConfigKeys::SKIP_OPAQUE_WINDOWS, Config::INTEGER{1});
     addConfigValue<Config::Values::String>(handle, ConfigKeys::DEFAULT_THEME, Config::STRING{"dark"});
     addConfigValue<Config::Values::String>(handle, ConfigKeys::DEFAULT_PRESET, Config::STRING{"default"});
+
+    // Performance diagnostics
+    addConfigValue<Config::Values::String>(handle, ConfigKeys::DEBUG_MODE, Config::STRING{"off"});
+    addConfigValue<Config::Values::Int>(handle, ConfigKeys::DEBUG_TIMERS, Config::INTEGER{0});
 
     // Layer surface support
     addConfigValue<Config::Values::Int>(handle, ConfigKeys::LAYERS_ENABLED, Config::INTEGER{0});
@@ -229,6 +246,9 @@ void initConfigPointers(HANDLE handle, SPluginConfig& config) {
     config.skipOpaqueWindows = getStaticPtr<Hyprlang::INT>(handle, ConfigKeys::SKIP_OPAQUE_WINDOWS);
     config.defaultTheme  = getStringPtr(handle, ConfigKeys::DEFAULT_THEME);
     config.defaultPreset = getStringPtr(handle, ConfigKeys::DEFAULT_PRESET);
+
+    config.debugMode   = getStringPtr(handle, ConfigKeys::DEBUG_MODE);
+    config.debugTimers = getStaticPtr<Hyprlang::INT>(handle, ConfigKeys::DEBUG_TIMERS);
 
     config.layersEnabled           = getStaticPtr<Hyprlang::INT>(handle, ConfigKeys::LAYERS_ENABLED);
     config.layersNamespaces        = getStringPtr(handle, ConfigKeys::LAYERS_NAMESPACES);
@@ -771,6 +791,15 @@ void validateConfig() {
     if (!parseLayerMaskMode(maskMode)) {
         HyprlandAPI::addNotificationV2(PHANDLE, {
             {"text", std::string("[hyprglass] Invalid layers:mask_mode '") + std::string(maskMode) + "', expected 'auto', 'alpha', or 'region'. Falling back to 'auto'."},
+            {"time", (uint64_t)5000},
+            {"color", CHyprColor{1.0, 0.8, 0.2, 1.0}},
+        });
+    }
+
+    const auto debugMode = readStringConfig(config.debugMode);
+    if (!parseDebugMode(debugMode)) {
+        HyprlandAPI::addNotificationV2(PHANDLE, {
+            {"text", std::string("[hyprglass] Invalid debug:mode '") + std::string(debugMode) + "', expected 'off', 'hints_only', or 'gl_work_only'. Falling back to 'off'."},
             {"time", (uint64_t)5000},
             {"color", CHyprColor{1.0, 0.8, 0.2, 1.0}},
         });

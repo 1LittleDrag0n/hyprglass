@@ -24,4 +24,17 @@ namespace WindowGeometry {
     return box;
 }
 
+// The monitor transform CGlassDecoration::renderPass() applies to its own
+// transformBox, factored out so CGlassPassElement::needsLiveBlur() can apply
+// it identically to the box it evaluates wantsBackgroundResample() against —
+// the two must agree on 90/270-degree-rotated monitors.
+[[nodiscard]] inline CBox applyMonitorTransform(CBox box, PHLMONITOR monitor) {
+    if (!monitor)
+        return box;
+
+    const auto transform = Math::wlTransformToHyprutils(Math::invertTransform(monitor->m_transform));
+    box.transform(transform, monitor->m_transformedSize.x, monitor->m_transformedSize.y);
+    return box;
+}
+
 } // namespace WindowGeometry

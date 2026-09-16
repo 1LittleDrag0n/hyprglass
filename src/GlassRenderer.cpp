@@ -1,5 +1,6 @@
 #include "GlassRenderer.hpp"
 #include "BuiltInPresets.hpp"
+#include "Diagnostics.hpp"
 #include "Globals.hpp"
 
 #include <algorithm>
@@ -61,11 +62,20 @@ void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IF
                        CBox box, Vector2D& outPaddingRatio, int downscale) {
     if (!sourceFramebuffer)
         return;
+
+    Diagnostics::CScopedStageTimer stageTimer(Diagnostics::EStage::SampleBackground);
+
     const int  pad = SAMPLE_PADDING_PX;
     const auto map = sampleMapFor(box, downscale);
 
     int fullWidth  = map.fullWidth;
     int fullHeight = map.fullHeight;
+
+    // Full-res source pixels this call blits, before any downscale — what the
+    // GPU actually reads off the source framebuffer, not the (possibly
+    // half-res) destination the sample FBO ends up holding.
+    if (const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock())
+        Diagnostics::recordSampledPixels(monitor->m_id, static_cast<double>(fullWidth) * static_cast<double>(fullHeight));
 
     int sampleWidth  = map.width;
     int sampleHeight = map.height;
@@ -291,6 +301,12 @@ void blurBackground(SP<Render::IFramebuffer> sampleFramebuffer, float radius, in
     if (!sampleFramebuffer || !callerFramebuffer || radius <= 0.0f || iterations <= 0 || !shaderManager.isInitialized())
         return;
 
+    Diagnostics::CScopedStageTimer stageTimer(Diagnostics::EStage::BlurBackground);
+
+    // Two ping-pong passes (horizontal, vertical) per iteration.
+    if (const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock())
+        Diagnostics::recordBlurPasses(monitor->m_id, static_cast<uint64_t>(iterations) * 2);
+
     int width  = static_cast<int>(sampleFramebuffer->m_size.x);
     int height = static_cast<int>(sampleFramebuffer->m_size.y);
 
@@ -352,6 +368,11 @@ void applyGlassEffect(SP<Render::IFramebuffer> sampleFramebuffer, SP<Render::IFr
                        const SMaskInfo* mask) {
     if (!sampleFramebuffer || !targetFramebuffer)
         return;
+
+    Diagnostics::CScopedStageTimer stageTimer(Diagnostics::EStage::ApplyGlassEffect);
+
+    if (const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock())
+        Diagnostics::recordGlassPixels(monitor->m_id, rawBox.w * rawBox.h);
 
     auto& shaderManager  = g_pGlobalState->shaderManager;
     const auto& uniforms = shaderManager.glassUniforms;

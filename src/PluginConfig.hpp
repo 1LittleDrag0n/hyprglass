@@ -42,6 +42,20 @@ enum class ELayerMaskMode { AUTO, ALPHA, REGION };
 // Parses "auto"/"alpha"/"region"; nullopt for anything else.
 [[nodiscard]] std::optional<ELayerMaskMode> parseLayerMaskMode(std::string_view value);
 
+// Instrumentation mode (plugin:hyprglass:debug:mode). Isolates the render-pass
+// cost from the GL pipeline cost for A/B measurement: hints_only skips all GL
+// work in the pass elements while keeping their boundingBox/needsLiveBlur/
+// disableSimplification hints; gl_work_only runs the GL pipeline as normal but
+// forces needsLiveBlur/disableSimplification off on both pass elements.
+enum class EDebugMode { OFF, HINTS_ONLY, GL_WORK_ONLY };
+
+// Parses "off"/"hints_only"/"gl_work_only"; nullopt for anything else.
+[[nodiscard]] std::optional<EDebugMode> parseDebugMode(std::string_view value);
+
+// Reads plugin:hyprglass:debug:mode, falling back to OFF for an unset global
+// state or an unrecognized value (validateConfig() warns about the latter).
+[[nodiscard]] EDebugMode currentDebugMode();
+
 namespace ConfigKeys {
 
 // Global-only
@@ -50,6 +64,10 @@ inline constexpr auto DEFAULT_THEME       = "plugin:hyprglass:default_theme";
 inline constexpr auto DEFAULT_PRESET      = "plugin:hyprglass:default_preset";
 inline constexpr auto MANAGE_WINDOW_BLUR  = "plugin:hyprglass:manage_window_blur";
 inline constexpr auto SKIP_OPAQUE_WINDOWS = "plugin:hyprglass:skip_opaque_windows";
+
+// Performance diagnostics
+inline constexpr auto DEBUG_MODE   = "plugin:hyprglass:debug:mode";
+inline constexpr auto DEBUG_TIMERS = "plugin:hyprglass:debug:timers";
 
 // Preset keyword, registered as unscoped because Hyprlang does not dispatch
 // scoped keyword handlers inside the plugin special category.
@@ -273,6 +291,10 @@ struct SPluginConfig {
     Hyprlang::INT* const* skipOpaqueWindows = nullptr;
     StringConfigPtr      defaultTheme;
     StringConfigPtr      defaultPreset;
+
+    // Performance diagnostics (see Diagnostics.hpp for the hyprctl side)
+    StringConfigPtr       debugMode;
+    Hyprlang::INT* const* debugTimers = nullptr;
 
     Hyprlang::INT* const* layersEnabled                  = nullptr;
     StringConfigPtr       layersNamespaces;
