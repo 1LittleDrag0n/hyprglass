@@ -4,8 +4,6 @@
 #include "Globals.hpp"
 #include "LayerGeometry.hpp"
 
-#include <cmath>
-
 CGlassLayerPassElement::CGlassLayerPassElement(const SGlassLayerPassData& data)
     : m_data(data) {}
 
@@ -16,7 +14,7 @@ std::vector<UP<IPassElement>> CGlassLayerPassElement::draw() {
     return {};
 }
 
-std::optional<CBox> CGlassLayerPassElement::boundingBox() {
+std::optional<CBox> CGlassLayerPassElement::paddedLogicalBox() const {
     if (!m_data.layerState)
         return std::nullopt;
 
@@ -25,16 +23,11 @@ std::optional<CBox> CGlassLayerPassElement::boundingBox() {
         return std::nullopt;
 
     const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
-    auto box = LayerGeometry::computeLayerBox(layerSurface, monitor);
-    if (!box)
-        return std::nullopt;
+    return LayerGeometry::computePaddedLogicalLayerBox(layerSurface, monitor, GlassRenderer::SAMPLE_PADDING_PX);
+}
 
-    const float scale = monitor->m_scale > 0.0f ? monitor->m_scale : 1.0f;
-    box->scale(1.0 / scale).expand(GlassRenderer::SAMPLE_PADDING_PX / scale).noNegativeSize().round();
-    if (!std::isfinite(box->x) || !std::isfinite(box->y) || !std::isfinite(box->w) || !std::isfinite(box->h) || box->w <= 0.0 || box->h <= 0.0)
-        return std::nullopt;
-
-    return box;
+std::optional<CBox> CGlassLayerPassElement::boundingBox() {
+    return paddedLogicalBox();
 }
 
 bool CGlassLayerPassElement::needsLiveBlur() {
@@ -43,7 +36,12 @@ bool CGlassLayerPassElement::needsLiveBlur() {
     // glass to sample a mix of fresh wallpaper and its own stale output.
     // Per-monitor sceneGeneration prevents non-focused monitors from
     // re-sampling, so the continuous damage cost is limited.
-    return m_data.layerState && m_data.layerState->getLayerSurface();
+    //
+    // Must agree with boundingBox() on whether a box exists: Hyprland's
+    // CRenderPass::render() asserts a bounding box for any element reporting
+    // live blur ("No bounding box for an element with live blur is illegal",
+    // Pass.cpp) and aborts the compositor if it's absent.
+    return paddedLogicalBox().has_value();
 }
 
 bool CGlassLayerPassElement::needsPrecomputeBlur() {

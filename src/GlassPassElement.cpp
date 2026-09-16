@@ -3,6 +3,8 @@
 #include "Globals.hpp"
 #include "WindowGeometry.hpp"
 
+#include <cmath>
+
 CGlassPassElement::CGlassPassElement(const SGlassPassData& data)
     : m_data(data) {}
 
@@ -21,7 +23,7 @@ std::vector<UP<IPassElement>> CGlassPassElement::draw() {
     return {};
 }
 
-std::optional<CBox> CGlassPassElement::boundingBox() {
+std::optional<CBox> CGlassPassElement::paddedLogicalBox() const {
     if (!m_data.decoration.valid())
         return std::nullopt;
 
@@ -34,12 +36,19 @@ std::optional<CBox> CGlassPassElement::boundingBox() {
     if (!box)
         return std::nullopt;
 
-    // Expand by the sampling margin so the pass damages everything we read from.
-    // Hyprland scales boundingBox() by the monitor scale itself, so hand it
-    // logical units; the margin is framebuffer pixels, hence / scale.
+    // IPassElement::boundingBox() is a monitor-local LOGICAL coordinate
+    // contract; computeWindowBox() returns physical pixels for renderPass()'s
+    // own use, so convert back and expand by our sampling padding here.
     const float scale = monitor->m_scale > 0.0f ? monitor->m_scale : 1.0f;
-    box->scale(1.0 / scale).expand(GlassRenderer::SAMPLE_PADDING_PX / scale);
+    box->scale(1.0 / scale).expand(GlassRenderer::SAMPLE_PADDING_PX / scale).noNegativeSize().round();
+    if (!std::isfinite(box->x) || !std::isfinite(box->y) || !std::isfinite(box->w) || !std::isfinite(box->h) || box->w <= 0.0 || box->h <= 0.0)
+        return std::nullopt;
+
     return box;
+}
+
+std::optional<CBox> CGlassPassElement::boundingBox() {
+    return paddedLogicalBox();
 }
 
 bool CGlassPassElement::needsLiveBlur() {
@@ -49,7 +58,12 @@ bool CGlassPassElement::needsLiveBlur() {
     // in the padded sampling region, causing blinking artifacts.
     // Layers don't need this — they have their own blur cache with
     // scene generation tracking.
-    return m_data.decoration.valid() && m_data.decoration->getOwner();
+    //
+    // Must agree with boundingBox() on whether a box exists: Hyprland's
+    // CRenderPass::render() asserts a bounding box for any element reporting
+    // live blur ("No bounding box for an element with live blur is illegal",
+    // Pass.cpp) and aborts the compositor if it's absent.
+    return paddedLogicalBox().has_value();
 }
 
 bool CGlassPassElement::needsPrecomputeBlur() {
