@@ -8,7 +8,9 @@
 #include "PluginConfig.hpp"
 
 #include <hyprland/src/Compositor.hpp>
+#include <hyprland/src/desktop/Workspace.hpp>
 #include <hyprland/src/desktop/view/LayerSurface.hpp>
+#include <hyprland/src/state/WorkspaceState.hpp>
 #include <hyprland/src/desktop/view/WLSurface.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
@@ -19,6 +21,7 @@
 #include <hyprland/src/debug/log/Logger.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <optional>
 #include <sstream>
@@ -67,24 +70,10 @@ CGlassDecoration* glassDecorationFor(const PHLWINDOW& window) {
 
 // Hyprland skips window decorations when internal fullscreen mode is
 // FSMODE_FULLSCREEN, queue the glass pass from RENDER_PRE_WINDOW to avoid double-queue.
-static void drawGlassForFullscreenWindow() {
-    if (!g_pGlobalState)
-        return;
-
-    // screenshare/export and snapshots render standalone — no scene behind to sample
-    if (g_pHyprRenderer->m_renderData.projectionType != Render::RPT_MONITOR || g_pHyprRenderer->m_bRenderingSnapshot)
-        return;
-
-    const auto window = g_pHyprRenderer->m_renderData.currentWindow.lock();
-    if (!window)
-        return;
-
+// The caller has already gated on the real monitor pass and locked both handles.
+static void drawGlassForFullscreenWindow(const PHLWINDOW& window, const PHLMONITOR& monitor) {
     // decorations render normally, draw() already ran
     if (Fullscreen::controller()->getFullscreenModes(window).internal != Fullscreen::FSMODE_FULLSCREEN)
-        return;
-
-    const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
-    if (!monitor)
         return;
 
     // solitary frames render no background to sample
@@ -93,6 +82,144 @@ static void drawGlassForFullscreenWindow() {
 
     if (auto* deco = glassDecorationFor(window))
         deco->draw(monitor, 1.f); // alpha unused, recomputed in renderPass
+}
+
+// ── Duplicate window copies ──────────────────────────────────────────────────
+
+// Every special workspace with alpha left gets its own pass over the same window
+// list, and no render stage names the workspace a pass is drawing.
+static bool otherSpecialWorkspaceVisible(const PHLWORKSPACE& workspace) {
+    for (const auto& ref : State::workspaceState()->workspaces()) {
+        const auto other = ref.lock();
+        if (!other || other == workspace || !other->m_isSpecialWorkspace)
+            continue;
+        if (other->m_alpha->value() > 0.f)
+            return true;
+    }
+    return false;
+}
+
+// Mirrors renderWorkspaceWindowsFullscreen(): a floating window allowed over
+// fullscreen is rendered once below the fullscreen window and once above it.
+// True only for the first of those two copies, false whenever anything is
+// unclear — a wrong true drops a window for a frame.
+// Caller established: real monitor pass, not a snapshot, and !isFullscreen(window).
+// The fullscreen-window lookup gates the clauses that walk state
+// (isFadingOutUnderFullscreen, shouldRenderOverFullscreen, shouldRenderWindow),
+// so an ordinary window render pays member loads and that one lookup.
+static bool isRedundantCopy(const PHLWINDOW& window, const PHLMONITOR& monitor) {
+    const auto& dedupe = g_pGlobalState->dedupe;
+
+    // the "and floating ones too" loop, below the fullscreen window
+    if (!window->m_isFloating)
+        return false;
+
+    // pinned windows get a third render after the workspace passes, and nothing
+    // in the render stages tells it apart from these two
+    if (window->m_pinned)
+        return false;
+
+    // the "then render windows over fullscreen" loop must redraw it
+    if (!window->m_isMapped)
+        return false;
+
+    // this must be the copy below the fullscreen window, which is rendered
+    // between the two loops
+    if (dedupe.sawFullscreen)
+        return false;
+    if (std::ranges::find(dedupe.dropped, window.get()) != dedupe.dropped.end())
+        return false;
+
+    const auto workspace = window->m_workspace;
+
+    // the fullscreen render path runs for this workspace
+    if (!workspace || workspace->m_monitor != monitor)
+        return false;
+    if (workspace != monitor->m_activeWorkspace && workspace != monitor->m_activeSpecialWorkspace)
+        return false;
+
+    // the loop between the two must find its fullscreen window, or it bails out
+    // before the second one and this copy is the only one of the frame
+    const auto fullscreenWindow = Fullscreen::controller()->getFullscreenWindow(workspace);
+    if (!fullscreenWindow || fullscreenWindow->m_workspace != workspace || !Fullscreen::controller()->isFullscreen(fullscreenWindow))
+        return false;
+
+    if (window->m_monitor == workspace->m_monitor && workspace->m_isSpecialWorkspace != window->onSpecialWorkspace())
+        return false;
+    if (workspace->m_isSpecialWorkspace && (window->m_monitor != workspace->m_monitor || otherSpecialWorkspaceVisible(workspace)))
+        return false;
+
+    if (window->isFadingOutUnderFullscreen() || !window->shouldRenderOverFullscreen())
+        return false;
+
+    // the pre-filter both loops share
+    if (window->alphaValue(Desktop::View::WINDOW_ALPHA_FADE) * window->alphaValue(Desktop::View::WINDOW_ALPHA_FULLSCREEN) == 0.f)
+        return false;
+
+    return g_pHyprRenderer->shouldRenderWindow(window, monitor);
+}
+
+static void beginWindowRender() {
+    // the real monitor pass only: overview/screencopy framebuffers and snapshots
+    // render the window once and have no scene behind to sample
+    if (g_pHyprRenderer->m_renderData.projectionType != Render::RPT_MONITOR || g_pHyprRenderer->m_bRenderingSnapshot)
+        return;
+
+    const auto window  = g_pHyprRenderer->m_renderData.currentWindow.lock();
+    const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    if (!window || !monitor)
+        return;
+
+    auto& dedupe = g_pGlobalState->dedupe;
+
+    // the flag only goes up and nothing after it is a candidate, so the
+    // fullscreen lookup stops once the fullscreen window has been rendered
+    if (!dedupe.sawFullscreen) {
+        if (Fullscreen::controller()->isFullscreen(window))
+            dedupe.sawFullscreen = true;
+        // renderWindow queues its surfaces, shadow and border through
+        // addPassElement, so redirecting the pass for its duration drops that
+        // whole copy. Popups bypass it (m_renderPass.add) and still land under
+        // the fullscreen window. Our own glass is skipped in queueGlassPass.
+        else if (!dedupe.guard && isRedundantCopy(window, monitor)) {
+            dedupe.sink.clear();
+            dedupe.guard = g_pHyprRenderer->redirectPass(&dedupe.sink);
+            dedupe.dropped.push_back(window.get());
+        }
+    }
+
+    drawGlassForFullscreenWindow(window, monitor);
+}
+
+static void endWindowRender() {
+    auto& dedupe = g_pGlobalState->dedupe;
+    if (!dedupe.guard)
+        return;
+
+    dedupe.guard.reset();
+    dedupe.sink.clear();
+}
+
+static void onRenderStage(eRenderStage stage) {
+    if (!g_pGlobalState)
+        return;
+
+    switch (stage) {
+        case RENDER_BEGIN:
+            // one serial per monitor frame, including the solitary fast path
+            // which emits no RENDER_PRE_WINDOWS
+            ++g_pGlobalState->frameSerial;
+            g_pGlobalState->dedupe.reset();
+            break;
+        case RENDER_PRE_WINDOWS: g_pGlobalState->dedupe.resetEpoch(); break;
+        case RENDER_PRE_WINDOW: beginWindowRender(); break;
+        case RENDER_POST_WINDOW: endWindowRender(); break;
+        // defensive: both stages are past the last renderWindow of the frame, so
+        // a leaked guard is released and the sink drops its buffer references
+        case RENDER_POST_WINDOWS: g_pGlobalState->dedupe.resetEpoch(); break;
+        case RENDER_POST: g_pGlobalState->dedupe.reset(); break;
+        default: break;
+    }
 }
 
 // ── Layer surface support ────────────────────────────────────────────────────
@@ -396,10 +523,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         }));
 
     g_pGlobalState->listeners.push_back(Event::bus()->m_events.render.stage.listen(
-        [](eRenderStage stage) {
-            if (stage == RENDER_PRE_WINDOW)
-                drawGlassForFullscreenWindow();
-        }));
+        [](eRenderStage stage) { onRenderStage(stage); }));
     g_pGlobalState->listeners.push_back(Event::bus()->m_events.window.moveToWorkspace.listen(
         [=](PHLWINDOW w, PHLWORKSPACE) { bumpWindowMonitor(w); }));
     g_pGlobalState->listeners.push_back(Event::bus()->m_events.workspace.active.listen(
@@ -488,6 +612,9 @@ APICALL EXPORT void PLUGIN_EXIT() {
 
     g_pGlobalState->listeners.clear();
     LayerDamageObserver::setEnabled(false);
+
+    // drop the redirect and the sink's elements while the plugin is still mapped
+    g_pGlobalState->dedupe.reset();
 
     g_pHyprRenderer->m_renderPass.removeAllOfType("CGlassPassElement");
     g_pHyprRenderer->m_renderPass.removeAllOfType("CGlassLayerPassElement");

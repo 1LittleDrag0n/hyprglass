@@ -7,8 +7,16 @@ CGlassPassElement::CGlassPassElement(const SGlassPassData& data)
     : m_data(data) {}
 
 std::vector<UP<IPassElement>> CGlassPassElement::draw() {
-    if (m_data.decoration.valid())
-        m_data.decoration->renderPass(g_pHyprRenderer->m_renderData.pMonitor.lock(), m_data.alpha);
+    if (!m_data.decoration.valid())
+        return {};
+
+    // Hyprland renders a floating window over fullscreen more than once per
+    // frame; every copy but the last queued is a no-op, so the glass is applied
+    // exactly once and samples the framebuffer as it is under the last copy.
+    if (!m_data.decoration->isCurrentGlassPass(m_data.frameSerial, m_data.queueIndex))
+        return {};
+
+    m_data.decoration->renderPass(g_pHyprRenderer->m_renderData.pMonitor.lock(), m_data.alpha);
 
     return {};
 }

@@ -53,6 +53,17 @@ class CGlassDecoration : public IHyprWindowDecoration {
 
     float m_lastSelfSample = 0.0f;
 
+    // Frame serial the last glass element was queued for, and its index in that
+    // frame. Hyprland renders a floating window over fullscreen more than once
+    // per frame, and only the last glass may sample and blur.
+    uint64_t m_glassFrameSerial = 0;
+    uint32_t m_glassQueueIndex  = 0;
+
+    void               queueGlassPass(float alpha);
+    [[nodiscard]] bool isCurrentGlassPass(uint64_t serial, uint32_t index) const {
+        return serial == 0 || (serial == m_glassFrameSerial && index == m_glassQueueIndex);
+    }
+
     void updateNoBlurProp(bool glassEnabled);
     void withdrawNoBlur();
 

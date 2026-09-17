@@ -144,6 +144,36 @@ SDecorationPositioningInfo CGlassDecoration::getPositioningInfo() {
 
 void CGlassDecoration::onPositioningReply(const SDecorationPositioningReply& reply) {}
 
+void CGlassDecoration::queueGlassPass(float alpha) {
+    // A duplicate copy is redirected into the dedupe sink and dropped whole: it
+    // needs no glass, and stamping it would leave the surviving element stale.
+    if (g_pGlobalState->dedupe.guard)
+        return;
+
+    CGlassPassElement::SGlassPassData data{m_self, alpha};
+
+    // Only the real monitor pass is de-duplicated: snapshots, screencopy and
+    // overview framebuffers render the window once, out of frame order.
+    const bool managed = g_pGlobalState->frameSerial != 0 && !g_pHyprRenderer->m_bRenderingSnapshot &&
+        g_pHyprRenderer->m_renderData.projectionType == Render::RPT_MONITOR;
+
+    if (managed) {
+        if (m_glassFrameSerial != g_pGlobalState->frameSerial) {
+            m_glassFrameSerial = g_pGlobalState->frameSerial;
+            m_glassQueueIndex  = 0;
+        } else
+            ++m_glassQueueIndex;
+
+        data.frameSerial = m_glassFrameSerial;
+        data.queueIndex  = m_glassQueueIndex;
+    }
+
+    // m_renderPass, never addPassElement: draw() runs inside Hyprland's own
+    // per-window redirect for transformed windows (motion blur), whose pass
+    // renders into a work buffer cleared to transparent — nothing to sample.
+    g_pHyprRenderer->m_renderPass.add(makeUnique<CGlassPassElement>(data));
+}
+
 void CGlassDecoration::draw(PHLMONITOR monitor, float const& alpha) {
     if (!g_pGlobalState)
         return;
@@ -155,8 +185,7 @@ void CGlassDecoration::draw(PHLMONITOR monitor, float const& alpha) {
         return;
     }
 
-    CGlassPassElement::SGlassPassData data{m_self, alpha};
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CGlassPassElement>(data));
+    queueGlassPass(alpha);
 
     // A slide translates the scene under us without any geometry change, and
     // Hyprland's per-tick window damage carries none of our sampling padding.

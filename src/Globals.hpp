@@ -88,6 +88,36 @@ struct SGlobalState {
     // watched commit, so it must stay a plain bool and not a config walk.
     bool selfSampleConfigured = false;
 
+    // Bumped on RENDER_BEGIN, so one value per monitor frame. 0 is reserved for
+    // renders we do not manage (snapshots, screencopy, overview framebuffers).
+    uint64_t frameSerial = 0;
+
+    // Hyprland renders a floating window that is allowed over fullscreen more
+    // than once per frame. The redundant copy is redirected into this pass,
+    // which is dropped instead of rendered.
+    // sink before guard: members destruct in reverse declaration order, and the
+    // guard must point m_currentPass away from sink before sink dies.
+    struct SDedupeState {
+        Render::CRenderPass                  sink;
+        UP<Hyprutils::Utils::CScopeGuard>    guard;
+        std::vector<Desktop::View::CWindow*> dropped; // identity only, never dereferenced
+        bool                                 sawFullscreen = false;
+
+        // one workspace pass
+        void resetEpoch() {
+            guard.reset();
+            sink.clear();
+            sawFullscreen = false;
+        }
+
+        // one monitor frame: `dropped` outlives the epoch, a window is rendered
+        // by the pass of another visible workspace too and may only lose one copy
+        void reset() {
+            resetEpoch();
+            dropped.clear();
+        }
+    } dedupe;
+
     // renderLayer hook
     CFunctionHook* renderLayerHook = nullptr;
 };
