@@ -2,10 +2,15 @@
 #include "BuiltInPresets.hpp"
 #include "Globals.hpp"
 
+#include <algorithm>
 #include <array>
 #include <GLES3/gl32.h>
+#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/protocols/core/Compositor.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
+#include <hyprland/src/render/pass/TexPassElement.hpp>
 #include <hyprland/src/render/Renderer.hpp>
+#include <hyprutils/utils/ScopeGuard.hpp>
 
 namespace GlassRenderer {
 
@@ -28,18 +33,42 @@ static void uploadThemeUniforms(const SResolveContext& ctx) {
     glUniform1f(uniforms.adaptiveBoost, resolvePresetFloat(ctx, &SPresetValues::adaptiveBoost, &SOverridableConfig::adaptiveBoost, defaults.adaptiveBoost));
 }
 
+CBox SSampleMap::toSample(const CBox& framebufferBox) const {
+    return CBox{(framebufferBox.x - srcX0) * scaleX, (framebufferBox.y - srcY0) * scaleY,
+                framebufferBox.width * scaleX, framebufferBox.height * scaleY};
+}
+
+SSampleMap sampleMapFor(const CBox& box, int downscale) {
+    SSampleMap map;
+    map.fullWidth  = static_cast<int>(box.width) + 2 * SAMPLE_PADDING_PX;
+    map.fullHeight = static_cast<int>(box.height) + 2 * SAMPLE_PADDING_PX;
+
+    // Reduced resolution when blur is strong enough to hide it.
+    // Weak blur at half-res shows pixelation.
+    map.width  = std::max(1, map.fullWidth / downscale);
+    map.height = std::max(1, map.fullHeight / downscale);
+
+    map.srcX0  = static_cast<int>(box.x) - SAMPLE_PADDING_PX;
+    map.srcY0  = static_cast<int>(box.y) - SAMPLE_PADDING_PX;
+    map.srcX1  = static_cast<int>(box.x + box.width) + SAMPLE_PADDING_PX;
+    map.srcY1  = static_cast<int>(box.y + box.height) + SAMPLE_PADDING_PX;
+    map.scaleX = static_cast<float>(map.width) / map.fullWidth;
+    map.scaleY = static_cast<float>(map.height) / map.fullHeight;
+    return map;
+}
+
 void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IFramebuffer> sourceFramebuffer,
                        CBox box, Vector2D& outPaddingRatio, int downscale) {
     if (!sourceFramebuffer)
         return;
-    const int pad = SAMPLE_PADDING_PX;
-    int fullWidth  = static_cast<int>(box.width) + 2 * pad;
-    int fullHeight = static_cast<int>(box.height) + 2 * pad;
+    const int  pad = SAMPLE_PADDING_PX;
+    const auto map = sampleMapFor(box, downscale);
 
-    // Allocate sample FBO at reduced resolution when blur is strong enough
-    // to hide the lower resolution. Weak blur at half-res shows pixelation.
-    int sampleWidth  = std::max(1, fullWidth / downscale);
-    int sampleHeight = std::max(1, fullHeight / downscale);
+    int fullWidth  = map.fullWidth;
+    int fullHeight = map.fullHeight;
+
+    int sampleWidth  = map.width;
+    int sampleHeight = map.height;
 
     if (!sampleFramebuffer)
         sampleFramebuffer = g_pHyprRenderer->createFB("hyprglass-sample");
@@ -49,10 +78,10 @@ void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IF
         sampleFramebuffer->m_drmFormat != sourceFramebuffer->m_drmFormat)
         sampleFramebuffer->alloc(sampleWidth, sampleHeight, sourceFramebuffer->m_drmFormat);
 
-    int srcX0 = static_cast<int>(box.x) - pad;
-    int srcX1 = static_cast<int>(box.x + box.width) + pad;
-    int srcY0 = static_cast<int>(box.y) - pad;
-    int srcY1 = static_cast<int>(box.y + box.height) + pad;
+    int srcX0 = map.srcX0;
+    int srcX1 = map.srcX1;
+    int srcY0 = map.srcY0;
+    int srcY1 = map.srcY1;
 
     // Clamp source coordinates to framebuffer bounds to avoid reading black/undefined pixels
     int framebufferWidth  = static_cast<int>(sourceFramebuffer->m_size.x);
@@ -62,8 +91,8 @@ void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IF
     int dstX0 = 0, dstY0 = 0, dstX1 = sampleWidth, dstY1 = sampleHeight;
 
     // Scale destination adjustments proportionally for the downscaled FBO
-    const float xScale = static_cast<float>(sampleWidth) / fullWidth;
-    const float yScale = static_cast<float>(sampleHeight) / fullHeight;
+    const float xScale = map.scaleX;
+    const float yScale = map.scaleY;
 
     if (srcX0 < 0) { dstX0 += static_cast<int>(-srcX0 * xScale); srcX0 = 0; }
     if (srcY0 < 0) { dstY0 += static_cast<int>(-srcY0 * yScale); srcY0 = 0; }
@@ -92,6 +121,160 @@ void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IF
     glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1,
                       dstX0, dstY0, dstX1, dstY1,
                       GL_COLOR_BUFFER_BIT, GL_LINEAR);
+}
+
+void blendOwnContent(SP<Render::IFramebuffer>& sampleFramebuffer, PHLWINDOW window, PHLMONITOR monitor,
+                      const CBox& box, int downscale, float amount, float cornerRadius, float roundingPower) {
+    if (amount <= 0.0f || !sampleFramebuffer || !window || !monitor)
+        return;
+
+    // The sample framebuffer holds already-rotated framebuffer-space pixels, while a
+    // texture drawn under RPT_EXPORT lands axis-aligned: on a 90/270 output the self
+    // image would come out rotated. Skipping keeps those outputs at today's look.
+    if (monitor->m_transform != WL_OUTPUT_TRANSFORM_NORMAL)
+        return;
+
+    // Hyprland renders a transformed window through a redirected pass and blits the
+    // result; our untransformed copy would not match what the user sees.
+    if (!window->m_transformers.empty())
+        return;
+
+    const auto hlSurface = window->wlSurface();
+    const auto root      = hlSurface ? hlSurface->resource() : nullptr;
+    if (!root)
+        return;
+
+    const auto     map    = sampleMapFor(box, downscale);
+    const Vector2D fbSize = sampleFramebuffer->m_size;
+
+    // The map only describes this framebuffer if sampleBackground() sized it from the
+    // same box; otherwise boxes would project against one size and rasterise into another.
+    if (fbSize.x != map.width || fbSize.y != map.height)
+        return;
+
+    auto& renderData = g_pHyprRenderer->m_renderData;
+
+    // Leave the caller the state sampleBackground leaves: scissor off, viewport from
+    // the re-bound framebuffer's own size (monitor sizes are wrong here, #41).
+    // Declared before the FB guard so it runs after that framebuffer is back, on the
+    // throwing path too.
+    const Hyprutils::Utils::CScopeGuard restoreGLState([&] {
+        g_pHyprOpenGL->scissor(nullptr);
+        if (const auto& restored = renderData.currentFB)
+            g_pHyprOpenGL->setViewport(0, 0, static_cast<int>(restored->m_size.x), static_cast<int>(restored->m_size.y));
+    });
+
+    auto guard = g_pHyprRenderer->bindTempFB(sampleFramebuffer);
+
+    const auto  savedProjection      = renderData.projectionType;
+    const auto  savedFbSize          = renderData.fbSize;
+    const auto  savedRenderModif     = renderData.renderModif;
+    const auto  savedWindow          = renderData.currentWindow;
+    const auto  savedSurface         = renderData.surface;
+    const auto  savedClipBox         = renderData.clipBox;
+    const auto  savedUVTopLeft       = renderData.primarySurfaceUVTopLeft;
+    const auto  savedUVBottomRight   = renderData.primarySurfaceUVBottomRight;
+    const bool  savedTransformDamage = renderData.transformDamage;
+
+    // draw() allocates a pass element per surface, so the restores must survive a
+    // throw: every later element would otherwise project through the sample size.
+    // Only render data, no GL state, so running after the FB rebind below is safe.
+    const Hyprutils::Utils::CScopeGuard restoreRenderData([&] {
+        renderData.primarySurfaceUVBottomRight = savedUVBottomRight;
+        renderData.primarySurfaceUVTopLeft     = savedUVTopLeft;
+        renderData.clipBox                     = savedClipBox;
+        renderData.surface                     = savedSurface;
+        renderData.currentWindow               = savedWindow;
+        renderData.renderModif                 = savedRenderModif;
+        renderData.transformDamage             = savedTransformDamage;
+        // before setProjectionType: RPT_FB recomputes the projection from fbSize
+        renderData.fbSize = savedFbSize;
+        g_pHyprRenderer->setProjectionType(savedProjection);
+    });
+
+    renderData.fbSize = fbSize;
+    g_pHyprRenderer->setProjectionType(Render::RPT_EXPORT);
+    // our boxes and damage rects are sample-framebuffer pixels, not monitor space
+    renderData.transformDamage = false;
+    // an overview plugin's modifier would otherwise be applied a second time
+    renderData.renderModif = {};
+    // a monitor-space clip would scissor the injection to the wrong rectangle
+    renderData.clipBox = {};
+    // Only for the rgbx shader variant, the one thing the texture draw cannot be told
+    // any other way. It also lets dim_inactive and the not-responding tint into the
+    // self image of those windows: accepted, there is no allowDim on this draw path.
+    if (window->m_ruleApplicator && window->m_ruleApplicator->RGBX().valueOrDefault())
+        renderData.currentWindow = window;
+
+    g_pHyprOpenGL->setViewport(0, 0, static_cast<int>(fbSize.x), static_cast<int>(fbSize.y));
+    // Premultiplied source-over. Not restored afterwards: m_blend is private, and every
+    // element boundary already leaves blending on with this same function.
+    g_pHyprRenderer->blend(true);
+
+    // Must be non-empty: renderTextureInternal drops empty damage, and an empty
+    // region here makes Hyprland substitute its own, which is in monitor space.
+    const CRegion fullDamage = CBox{0, 0, fbSize.x, fbSize.y};
+
+    root->breadthfirst(
+        [&](SP<CWLSurfaceResource> surface, const Vector2D& offset, void*) {
+            const auto texture = surface->m_current.texture;
+            // renderTextureInternal asserts on both, and an assert kills the compositor
+            if (!texture || !texture->ok())
+                return;
+            if (surface->m_current.size.x < 1 || surface->m_current.size.y < 1)
+                return;
+
+            const bool mainSurface = surface == root;
+
+            CBox       framebufferBox = box;
+            if (!mainSurface) {
+                framebufferBox = CBox{box.x + offset.x * monitor->m_scale, box.y + offset.y * monitor->m_scale,
+                                      surface->m_current.size.x * monitor->m_scale, surface->m_current.size.y * monitor->m_scale};
+                framebufferBox.round();
+            }
+
+            // Viewporter source crop, the one surface-state correction video players
+            // need. Small and misaligned surfaces keep their uncorrected placement.
+            // Each surface also blends at the same alpha, so where a subsurface covers
+            // the main one the desktop share is (1-amount)^2: visible as a ghost of the
+            // main surface at mid values, gone at 1.0. Fixing it needs a scratch target.
+            const auto& viewport   = surface->m_current.viewport;
+            const auto& bufferSize = surface->m_current.bufferSize;
+            bool        customUV   = false;
+            if (viewport.hasSource && bufferSize.x > 0 && bufferSize.y > 0) {
+                const Vector2D uvTopLeft{viewport.source.x / bufferSize.x, viewport.source.y / bufferSize.y};
+                const Vector2D uvBottomRight{(viewport.source.x + viewport.source.width) / bufferSize.x,
+                                             (viewport.source.y + viewport.source.height) / bufferSize.y};
+                if (uvBottomRight.x > 0.00001 && uvBottomRight.y > 0.00001) {
+                    renderData.primarySurfaceUVTopLeft     = uvTopLeft;
+                    renderData.primarySurfaceUVBottomRight = uvBottomRight;
+                    customUV                               = true;
+                }
+            }
+            if (!customUV) {
+                renderData.primarySurfaceUVTopLeft     = Vector2D(-1, -1);
+                renderData.primarySurfaceUVBottomRight = Vector2D(-1, -1);
+            }
+
+            g_pHyprRenderer->draw(CTexPassElement::SRenderData{
+                .tex           = texture,
+                .box           = map.toSample(framebufferBox),
+                .a             = amount,
+                .damage        = fullDamage,
+                .round         = mainSurface ? static_cast<int>(cornerRadius * map.scaleX) : 0,
+                .roundingPower = roundingPower,
+                .allowCustomUV = customUV,
+                .surface       = surface,
+            });
+
+            // The texture path tracks no buffer of its own, and the window's real draw
+            // may be discarded as occluded, releasing the buffer we just read.
+            if (surface->m_current.buffer && !surface->m_current.buffer->isSynchronous())
+                g_pHyprRenderer->m_usedAsyncBuffers.emplace_back(surface->m_current.buffer);
+        },
+        nullptr);
+
+    guard.reset();
 }
 
 void blurBackground(SP<Render::IFramebuffer> sampleFramebuffer, float radius, int iterations,

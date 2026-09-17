@@ -91,6 +91,7 @@ void registerConfig(HANDLE handle) {
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::BEVEL_TINT, Config::FLOAT{GlobalDefaults::BEVEL_TINT});
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::BEVEL_ANGLE, Config::FLOAT{GlobalDefaults::BEVEL_ANGLE});
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::BEVEL_SHADOW, Config::FLOAT{GlobalDefaults::BEVEL_SHADOW});
+    addConfigValue<Config::Values::Float>(handle, ConfigKeys::SELF_SAMPLE, Config::FLOAT{GlobalDefaults::SELF_SAMPLE});
 
     // Dark theme overrides — all sentinel (inherit from global)
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::DARK_BLUR_STRENGTH, Config::FLOAT{SENTINEL_FLOAT});
@@ -121,6 +122,7 @@ void registerConfig(HANDLE handle) {
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::DARK_BEVEL_TINT, Config::FLOAT{SENTINEL_FLOAT});
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::DARK_BEVEL_ANGLE, Config::FLOAT{SENTINEL_FLOAT});
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::DARK_BEVEL_SHADOW, Config::FLOAT{SENTINEL_FLOAT});
+    addConfigValue<Config::Values::Float>(handle, ConfigKeys::DARK_SELF_SAMPLE, Config::FLOAT{SENTINEL_FLOAT});
 
     // Light theme overrides — all sentinel (inherit from global)
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::LIGHT_BLUR_STRENGTH, Config::FLOAT{SENTINEL_FLOAT});
@@ -151,6 +153,7 @@ void registerConfig(HANDLE handle) {
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::LIGHT_BEVEL_TINT, Config::FLOAT{SENTINEL_FLOAT});
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::LIGHT_BEVEL_ANGLE, Config::FLOAT{SENTINEL_FLOAT});
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::LIGHT_BEVEL_SHADOW, Config::FLOAT{SENTINEL_FLOAT});
+    addConfigValue<Config::Values::Float>(handle, ConfigKeys::LIGHT_SELF_SAMPLE, Config::FLOAT{SENTINEL_FLOAT});
 
     // Legacy config keyword plus Lua-config callbacks for custom presets and layers.
     HyprlandAPI::addConfigKeyword(handle, ConfigKeys::PRESET_KEYWORD, handlePresetKeyword, Hyprlang::SHandlerOptions{});
@@ -186,7 +189,8 @@ static void initOverridablePointers(HANDLE handle, SOverridableConfig& layer,
                                     const char* fresnelTint, const char* bevelStrength,
                                     const char* bevelSize, const char* fresnelColor,
                                     const char* bevelColor, const char* bevelTint,
-                                    const char* bevelAngle, const char* bevelShadow) {
+                                    const char* bevelAngle, const char* bevelShadow,
+                                    const char* selfSample) {
     layer.blurStrength        = getStaticPtr<Hyprlang::FLOAT>(handle, blurStrength);
     layer.blurIterations      = getStaticPtr<Hyprlang::INT>(handle, blurIterations);
     layer.refractionStrength  = getStaticPtr<Hyprlang::FLOAT>(handle, refractionStrength);
@@ -215,6 +219,7 @@ static void initOverridablePointers(HANDLE handle, SOverridableConfig& layer,
     layer.bevelTint           = getStaticPtr<Hyprlang::FLOAT>(handle, bevelTint);
     layer.bevelAngle          = getStaticPtr<Hyprlang::FLOAT>(handle, bevelAngle);
     layer.bevelShadow         = getStaticPtr<Hyprlang::FLOAT>(handle, bevelShadow);
+    layer.selfSample          = getStaticPtr<Hyprlang::FLOAT>(handle, selfSample);
 }
 
 void initConfigPointers(HANDLE handle, SPluginConfig& config) {
@@ -252,7 +257,8 @@ void initConfigPointers(HANDLE handle, SPluginConfig& config) {
         ConfigKeys::FRESNEL_TINT, ConfigKeys::BEVEL_STRENGTH,
         ConfigKeys::BEVEL_SIZE, ConfigKeys::FRESNEL_COLOR,
         ConfigKeys::BEVEL_COLOR, ConfigKeys::BEVEL_TINT,
-        ConfigKeys::BEVEL_ANGLE, ConfigKeys::BEVEL_SHADOW);
+        ConfigKeys::BEVEL_ANGLE, ConfigKeys::BEVEL_SHADOW,
+        ConfigKeys::SELF_SAMPLE);
 
     initOverridablePointers(handle, config.dark,
         ConfigKeys::DARK_BLUR_STRENGTH, ConfigKeys::DARK_BLUR_ITERATIONS,
@@ -269,7 +275,8 @@ void initConfigPointers(HANDLE handle, SPluginConfig& config) {
         ConfigKeys::DARK_FRESNEL_TINT, ConfigKeys::DARK_BEVEL_STRENGTH,
         ConfigKeys::DARK_BEVEL_SIZE, ConfigKeys::DARK_FRESNEL_COLOR,
         ConfigKeys::DARK_BEVEL_COLOR, ConfigKeys::DARK_BEVEL_TINT,
-        ConfigKeys::DARK_BEVEL_ANGLE, ConfigKeys::DARK_BEVEL_SHADOW);
+        ConfigKeys::DARK_BEVEL_ANGLE, ConfigKeys::DARK_BEVEL_SHADOW,
+        ConfigKeys::DARK_SELF_SAMPLE);
 
     initOverridablePointers(handle, config.light,
         ConfigKeys::LIGHT_BLUR_STRENGTH, ConfigKeys::LIGHT_BLUR_ITERATIONS,
@@ -286,7 +293,8 @@ void initConfigPointers(HANDLE handle, SPluginConfig& config) {
         ConfigKeys::LIGHT_FRESNEL_TINT, ConfigKeys::LIGHT_BEVEL_STRENGTH,
         ConfigKeys::LIGHT_BEVEL_SIZE, ConfigKeys::LIGHT_FRESNEL_COLOR,
         ConfigKeys::LIGHT_BEVEL_COLOR, ConfigKeys::LIGHT_BEVEL_TINT,
-        ConfigKeys::LIGHT_BEVEL_ANGLE, ConfigKeys::LIGHT_BEVEL_SHADOW);
+        ConfigKeys::LIGHT_BEVEL_ANGLE, ConfigKeys::LIGHT_BEVEL_SHADOW,
+        ConfigKeys::LIGHT_SELF_SAMPLE);
 }
 
 // ── Preset keyword parsing ───────────────────────────────────────────────────
@@ -329,6 +337,7 @@ static bool setPresetFloatField(SPresetValues& values, std::string_view key, std
     if (key == "bevel_tint")           { values.bevelTint = parsed; return true; }
     if (key == "bevel_angle")          { values.bevelAngle = parsed; return true; }
     if (key == "bevel_shadow")         { values.bevelShadow = parsed; return true; }
+    if (key == "self_sample")          { values.selfSample = parsed; return true; }
     return false;
 }
 
@@ -389,6 +398,7 @@ static void mergePresetValues(SPresetValues& target, const SPresetValues& overri
     mergeFloat(target.bevelTint, overrides.bevelTint);
     mergeFloat(target.bevelAngle, overrides.bevelAngle);
     mergeFloat(target.bevelShadow, overrides.bevelShadow);
+    mergeFloat(target.selfSample, overrides.selfSample);
 }
 
 Hyprlang::CParseResult handlePresetKeyword(const char* /*command*/, const char* value) {
@@ -775,6 +785,20 @@ void validateConfig() {
             });
         }
     }
+}
+
+bool anySelfSampleConfigured(const SPluginConfig& config, const std::unordered_map<std::string, SCustomPreset>& customPresets) {
+    for (const auto* layer : {&config.global, &config.dark, &config.light}) {
+        if (auto ptr = layer->selfSample; ptr && *ptr && **ptr > 0.0)
+            return true;
+    }
+
+    for (const auto& [_, preset] : customPresets) {
+        if (preset.shared.selfSample > 0.0f || preset.dark.selfSample > 0.0f || preset.light.selfSample > 0.0f)
+            return true;
+    }
+
+    return false;
 }
 
 // ── Preset-aware resolution ──────────────────────────────────────────────────

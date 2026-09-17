@@ -24,6 +24,8 @@ struct SGlobalState {
     // listeners outlived the plugin and fired after unload -> SEGV on reload.
     std::vector<Hyprutils::Signal::CHyprSignalListener> listeners;
 
+    // These WPs wrap the UP<IHyprWindowDecoration> Hyprland owns: dereference with
+    // .get() only, lock() asserts on a unique-owned pointer and terminates.
     std::vector<WP<CGlassDecoration>> decorations;
     CShaderManager                    shaderManager;
     SPluginConfig                     config;
@@ -82,6 +84,10 @@ struct SGlobalState {
     std::vector<Hyprutils::Signal::CHyprSignalListener>         observerListeners;
     std::unordered_map<WP<CWLSurfaceResource>, SWatchedSurface> watchedSurfaces;
 
+    // Mirrors anySelfSampleConfigured(), refreshed with the observer. Read on every
+    // watched commit, so it must stay a plain bool and not a config walk.
+    bool selfSampleConfigured = false;
+
     // renderLayer hook
     CFunctionHook* renderLayerHook = nullptr;
 };
@@ -90,6 +96,9 @@ using Render::GL::g_pHyprOpenGL;
 
 inline HANDLE                        PHANDLE = nullptr;
 inline std::unique_ptr<SGlobalState> g_pGlobalState;
+
+// Decoration registered for this window, or nullptr. Borrowed, never owned.
+CGlassDecoration* glassDecorationFor(const PHLWINDOW& window);
 
 inline constexpr std::string_view PLUGIN_NAME        = "hyprglass";
 inline constexpr std::string_view PLUGIN_DESCRIPTION = "Apple-style Liquid Glass effect";

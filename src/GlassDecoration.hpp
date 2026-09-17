@@ -26,6 +26,13 @@ class CGlassDecoration : public IHyprWindowDecoration {
     void                    renderPass(PHLMONITOR monitor, const float& alpha);
     void                    onFullscreenStateChanged();
 
+    // Owner test without the shared_ptr copy getOwner() hands out.
+    [[nodiscard]] bool  ownsWindow(const PHLWINDOW& window) const { return m_window == window; }
+    // self_sample as of the last rendered frame, 0 when the glass is off. Read on
+    // every watched surface commit, so it must not walk the preset chain.
+    [[nodiscard]] float lastSelfSample() const { return m_lastSelfSample; }
+
+    // Weak over the UP Hyprland owns: use .get()/-> only, never .lock().
     WP<CGlassDecoration> m_self;
 
   private:
@@ -43,6 +50,8 @@ class CGlassDecoration : public IHyprWindowDecoration {
     // snapshot taken before plugin decorations render — without noblur the
     // glass is invisible on static windows (#46).
     bool m_noBlurApplied = false;
+
+    float m_lastSelfSample = 0.0f;
 
     void updateNoBlurProp(bool glassEnabled);
     void withdrawNoBlur();

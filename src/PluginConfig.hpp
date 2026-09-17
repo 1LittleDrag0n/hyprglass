@@ -83,6 +83,7 @@ inline constexpr auto BEVEL_COLOR           = "plugin:hyprglass:bevel_color";
 inline constexpr auto BEVEL_TINT            = "plugin:hyprglass:bevel_tint";
 inline constexpr auto BEVEL_ANGLE           = "plugin:hyprglass:bevel_angle";
 inline constexpr auto BEVEL_SHADOW          = "plugin:hyprglass:bevel_shadow";
+inline constexpr auto SELF_SAMPLE           = "plugin:hyprglass:self_sample";
 
 // Layer surface support
 inline constexpr auto LAYERS_ENABLED            = "plugin:hyprglass:layers:enabled";
@@ -128,6 +129,7 @@ inline constexpr auto DARK_BEVEL_COLOR          = "plugin:hyprglass:dark:bevel_c
 inline constexpr auto DARK_BEVEL_TINT           = "plugin:hyprglass:dark:bevel_tint";
 inline constexpr auto DARK_BEVEL_ANGLE          = "plugin:hyprglass:dark:bevel_angle";
 inline constexpr auto DARK_BEVEL_SHADOW         = "plugin:hyprglass:dark:bevel_shadow";
+inline constexpr auto DARK_SELF_SAMPLE          = "plugin:hyprglass:dark:self_sample";
 
 // Overridable — light theme overrides
 inline constexpr auto LIGHT_BLUR_STRENGTH        = "plugin:hyprglass:light:blur_strength";
@@ -158,6 +160,7 @@ inline constexpr auto LIGHT_BEVEL_COLOR          = "plugin:hyprglass:light:bevel
 inline constexpr auto LIGHT_BEVEL_TINT           = "plugin:hyprglass:light:bevel_tint";
 inline constexpr auto LIGHT_BEVEL_ANGLE          = "plugin:hyprglass:light:bevel_angle";
 inline constexpr auto LIGHT_BEVEL_SHADOW         = "plugin:hyprglass:light:bevel_shadow";
+inline constexpr auto LIGHT_SELF_SAMPLE          = "plugin:hyprglass:light:self_sample";
 
 } // namespace ConfigKeys
 
@@ -191,6 +194,7 @@ struct SOverridableConfig {
     Hyprlang::FLOAT* const* bevelTint           = nullptr;
     Hyprlang::FLOAT* const* bevelAngle          = nullptr;
     Hyprlang::FLOAT* const* bevelShadow         = nullptr;
+    Hyprlang::FLOAT* const* selfSample          = nullptr;
 };
 
 // Plain values for a user-defined preset layer (all sentinel = not set → inherit)
@@ -223,6 +227,7 @@ struct SPresetValues {
     float   bevelTint          = static_cast<float>(SENTINEL_FLOAT);
     float   bevelAngle         = static_cast<float>(SENTINEL_FLOAT);
     float   bevelShadow        = static_cast<float>(SENTINEL_FLOAT);
+    float   selfSample         = static_cast<float>(SENTINEL_FLOAT);
 };
 
 struct SCustomPreset {
@@ -304,6 +309,12 @@ struct SResolveContext {
     int64_t SPresetValues::* presetField,
     Hyprlang::INT* const* SOverridableConfig::* configField,
     int64_t hardcodedDefault = SENTINEL_INT);
+
+// True when any tier can resolve self_sample above 0. Answers "could a window
+// sample itself" without a window at hand, so the surface observer can stay
+// unarmed on the default config.
+[[nodiscard]] bool anySelfSampleConfigured(const SPluginConfig&                                  config,
+                                           const std::unordered_map<std::string, SCustomPreset>& customPresets);
 
 void registerConfig(HANDLE handle);
 void initConfigPointers(HANDLE handle, SPluginConfig& config);

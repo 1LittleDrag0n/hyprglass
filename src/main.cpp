@@ -56,10 +56,10 @@ static void onCloseWindow(PHLWINDOW window) {
     });
 }
 
-static CGlassDecoration* glassDecorationFor(const PHLWINDOW& window) {
+CGlassDecoration* glassDecorationFor(const PHLWINDOW& window) {
     for (const auto& decoration : g_pGlobalState->decorations) {
         auto* deco = decoration.get();
-        if (deco && deco->getOwner() == window)
+        if (deco && deco->ownsWindow(window))
             return deco;
     }
     return nullptr;
@@ -216,6 +216,17 @@ struct SLayerBlurSuppression {
     }
 };
 
+// Both consumers of the surface observer in one place: layers when they are
+// enabled, windows when any tier configures self_sample. Walks every preset, so
+// it belongs only where the config can actually have changed.
+static void refreshSurfaceObserver() {
+    if (!g_pGlobalState)
+        return;
+
+    g_pGlobalState->selfSampleConfigured = anySelfSampleConfigured(g_pGlobalState->config, g_pGlobalState->customPresets);
+    LayerDamageObserver::refreshEnabled();
+}
+
 using renderLayerFn = void (*)(Render::IHyprRenderer*, PHLLS, PHLMONITOR, const Time::steady_tp&, bool, bool);
 
 // A renderLayer call that is not the monitor's own layer pass: a caller
@@ -235,9 +246,10 @@ static void hkRenderLayer(Render::IHyprRenderer* thisptr, PHLLS layerSurface, PH
                            const Time::steady_tp& now, bool popups, bool lockscreen) {
     const auto& config = g_pGlobalState->config;
 
-    // layers:enabled can flip without a config reload (hyprctl keyword), so follow
-    // it here too; this is a no-op once the observer is in the requested state
-    LayerDamageObserver::setEnabled(config.layersEnabled && **config.layersEnabled);
+    // layers:enabled can flip without a config reload (hyprctl keyword), so follow it
+    // here too; this is a no-op once the observer is in the requested state.
+    // self_sample is followed from the window path, which resolves it anyway.
+    LayerDamageObserver::refreshEnabled();
 
     // Hyprland renders closing layers from snapshots. Do not inject the glass
     // pipeline while that snapshot is being captured: the snapshot framebuffer
@@ -410,7 +422,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         commitPendingLayers(); // merge Lua layer() calls on top of string config
         validateConfig();
         // config values are only valid here: reloadConfig() is asynchronous
-        LayerDamageObserver::setEnabled(g_pGlobalState->config.layersEnabled && **g_pGlobalState->config.layersEnabled);
+        refreshSurfaceObserver();
     }));
 
 
@@ -465,6 +477,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     parseLayerNamespaceFilters();
     commitPendingLayers();
     validateConfig();
+    refreshSurfaceObserver();
 
     return {std::string(PLUGIN_NAME), std::string(PLUGIN_DESCRIPTION), std::string(PLUGIN_AUTHOR), std::string(PLUGIN_VERSION)};
 }
