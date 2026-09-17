@@ -1,4 +1,5 @@
 #include "GlassPassElement.hpp"
+#include "Diagnostics.hpp"
 #include "GlassDecoration.hpp"
 #include "Globals.hpp"
 #include "PluginConfig.hpp"
@@ -65,17 +66,29 @@ bool CGlassPassElement::needsLiveBlur() {
     if (currentDebugMode() == EDebugMode::GL_WORK_ONLY)
         return false;
 
-    // Keeps the background under our padded box rendered inside the render
-    // pass's damage, so sampling never picks up stale pixels left by partial
-    // damage from something behind the window (e.g. typing in a window
-    // below). Layers don't need this — they have their own blur cache with
-    // scene generation tracking.
-    //
     // Must agree with boundingBox() on whether a box exists: Hyprland's
     // CRenderPass::render() asserts a bounding box for any element reporting
     // live blur ("No bounding box for an element with live blur is illegal",
-    // Pass.cpp) and aborts the compositor if it's absent.
-    return paddedLogicalBox().has_value();
+    // Pass.cpp) and aborts the compositor if it's absent. A truthy result
+    // here also guarantees the decoration, its window and its monitor are
+    // all valid, since paddedLogicalBox() checks each of them.
+    if (!paddedLogicalBox().has_value())
+        return false;
+
+    const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    const auto window   = m_data.decoration->getOwner();
+    if (!monitor || !window)
+        return false;
+
+    const auto box = WindowGeometry::computeWindowBox(window, monitor);
+    if (!box)
+        return false;
+
+    // Only expand damage/exempt occlusion when the cached background actually
+    // needs a fresh sample this frame — a cache hit needs neither (see the
+    // "Cache hit" case in renderPass()). Transformed like renderPass()'s own
+    // box so the two calls agree on 90/270-degree-rotated monitors too.
+    return m_data.decoration->wantsBackgroundResample(monitor, WindowGeometry::applyMonitorTransform(*box, monitor));
 }
 
 bool CGlassPassElement::needsPrecomputeBlur() {
@@ -88,4 +101,16 @@ bool CGlassPassElement::disableSimplification() {
     // One that survives discard still draws its whole box, so needsLiveBlur
     // above is what keeps the background beneath that box correct, not this.
     return false;
+}
+
+void CGlassPassElement::discard() {
+    // CRenderPass::render() calls this in place of draw() for an element
+    // simplify() dropped — renderPass() never runs for it, so it's otherwise
+    // invisible to every other counter this file records. The only way
+    // `hyprctl hyprglass stats` can show how many glass windows exist versus
+    // how many are actually being kept current.
+    if (const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock())
+        Diagnostics::recordWindowPassDiscarded(monitor->m_id);
+
+    IPassElement::discard();
 }

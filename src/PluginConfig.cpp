@@ -79,6 +79,11 @@ void registerConfig(HANDLE handle) {
     addConfigValue<Config::Values::String>(handle, ConfigKeys::LAYERS_NAMESPACE_MASK_MODES, Config::STRING{});
     addConfigValue<Config::Values::Int>(handle, ConfigKeys::LAYERS_MANAGE_BLUR, Config::INTEGER{1});
 
+    // Window background cache
+    addConfigValue<Config::Values::Int>(handle, ConfigKeys::WINDOWS_BACKGROUND_CACHE, Config::INTEGER{1});
+    addConfigValue<Config::Values::Int>(handle, ConfigKeys::WINDOWS_LIVE_RESAMPLE, Config::INTEGER{1});
+    addConfigValue<Config::Values::Int>(handle, ConfigKeys::WINDOWS_LIVE_RESAMPLE_FPS, Config::INTEGER{30});
+
     // Global level — real defaults for effect settings,
     // sentinel for theme-sensitive settings (fallback to hardcoded theme defaults)
     addConfigValue<Config::Values::Float>(handle, ConfigKeys::BLUR_STRENGTH, Config::FLOAT{GlobalDefaults::BLUR_STRENGTH});
@@ -263,6 +268,10 @@ void initConfigPointers(HANDLE handle, SPluginConfig& config) {
     config.layersMaskMode           = getStringPtr(handle, ConfigKeys::LAYERS_MASK_MODE);
     config.layersNamespaceMaskModes = getStringPtr(handle, ConfigKeys::LAYERS_NAMESPACE_MASK_MODES);
     config.layersManageBlur         = getStaticPtr<Hyprlang::INT>(handle, ConfigKeys::LAYERS_MANAGE_BLUR);
+
+    config.windowsBackgroundCache = getStaticPtr<Hyprlang::INT>(handle, ConfigKeys::WINDOWS_BACKGROUND_CACHE);
+    config.windowsLiveResample    = getStaticPtr<Hyprlang::INT>(handle, ConfigKeys::WINDOWS_LIVE_RESAMPLE);
+    config.windowsLiveResampleFps = getStaticPtr<Hyprlang::INT>(handle, ConfigKeys::WINDOWS_LIVE_RESAMPLE_FPS);
 
     initOverridablePointers(handle, config.global,
         ConfigKeys::BLUR_STRENGTH, ConfigKeys::BLUR_ITERATIONS,

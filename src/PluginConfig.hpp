@@ -119,6 +119,13 @@ inline constexpr auto LAYERS_MASK_MODE                  = "plugin:hyprglass:laye
 inline constexpr auto LAYERS_NAMESPACE_MASK_MODES       = "plugin:hyprglass:layers:namespace_mask_modes";
 inline constexpr auto LAYERS_MANAGE_BLUR                = "plugin:hyprglass:layers:manage_blur";
 
+// Window background cache kill switch; commit-driven invalidation (single
+// global bool, no per-namespace concept for windows) and its throttle —
+// mirrors the layers:live_resample/live_resample_fps keys above.
+inline constexpr auto WINDOWS_BACKGROUND_CACHE  = "plugin:hyprglass:windows:background_cache";
+inline constexpr auto WINDOWS_LIVE_RESAMPLE     = "plugin:hyprglass:windows:live_resample";
+inline constexpr auto WINDOWS_LIVE_RESAMPLE_FPS = "plugin:hyprglass:windows:live_resample_fps";
+
 // Overridable — dark theme overrides
 inline constexpr auto DARK_BLUR_STRENGTH        = "plugin:hyprglass:dark:blur_strength";
 inline constexpr auto DARK_BLUR_ITERATIONS      = "plugin:hyprglass:dark:blur_iterations";
@@ -309,6 +316,10 @@ struct SPluginConfig {
     StringConfigPtr       layersMaskMode;
     StringConfigPtr       layersNamespaceMaskModes;
     Hyprlang::INT* const* layersManageBlur               = nullptr;
+
+    Hyprlang::INT* const* windowsBackgroundCache  = nullptr;
+    Hyprlang::INT* const* windowsLiveResample     = nullptr;
+    Hyprlang::INT* const* windowsLiveResampleFps  = nullptr;
 
     SOverridableConfig global;
     SOverridableConfig dark;

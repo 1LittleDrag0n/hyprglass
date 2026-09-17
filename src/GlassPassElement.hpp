@@ -26,6 +26,7 @@ class CGlassPassElement : public IPassElement {
     [[nodiscard]] bool                needsPrecomputeBlur() override;
     [[nodiscard]] std::optional<CBox> boundingBox() override;
     [[nodiscard]] bool                disableSimplification() override;
+    void                               discard() override;
 
     [[nodiscard]] const char* passName() override { return "CGlassPassElement"; }
     [[nodiscard]] ePassElementType type() override { return EK_CUSTOM; }

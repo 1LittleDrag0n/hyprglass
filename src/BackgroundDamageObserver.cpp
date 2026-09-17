@@ -1,9 +1,10 @@
-#include "LayerDamageObserver.hpp"
+#include "BackgroundDamageObserver.hpp"
 
 #include "GlassDecoration.hpp"
 #include "GlassLayerSurface.hpp"
 #include "GlassRenderer.hpp"
 #include "Globals.hpp"
+#include "WindowGeometry.hpp"
 
 #include <hyprland/src/desktop/view/LayerSurface.hpp>
 #include <hyprland/src/desktop/view/WLSurface.hpp>
@@ -113,8 +114,11 @@ namespace {
 
         // Match the committing window to its decoration first: only that one can
         // want the widened damage, and only it is worth reading a value off.
+        // markBackgroundDirty() (not damageEntire()): a plain damageEntire() only
+        // widens screen damage and leaves m_hasCachedSample valid, so the B1 cache
+        // would keep compositing the window's now-stale self-sampled content.
         if (auto* decoration = glassDecorationFor(window); decoration && decoration->lastSelfSample() > 0.0f)
-            decoration->damageEntire();
+            decoration->markBackgroundDirty();
     }
 
     // Signal callbacks run inside Hyprland's emit, so an escaping exception would
@@ -144,12 +148,20 @@ namespace {
             return;
 
         const auto& config = g_pGlobalState->config;
-        if (!config.layersEnabled || !**config.layersEnabled || g_pGlobalState->layerSurfaces.empty())
+
+        // Two independent sides can want this observer armed: layers (tracked
+        // surfaces + layers:enabled) and windows (any decoration + windows:live_resample).
+        // Early-out only when *neither* side has anything to gain from this commit.
+        const bool layersTracked  = config.layersEnabled && **config.layersEnabled && !g_pGlobalState->layerSurfaces.empty();
+        const bool windowsTracked = config.windowsLiveResample && **config.windowsLiveResample && !g_pGlobalState->decorations.empty();
+        if (!layersTracked && !windowsTracked)
             return;
 
         // cheap skip when nothing can want a live resample
-        const bool globalLive = config.layersLiveResample && **config.layersLiveResample;
-        if (!globalLive && std::ranges::none_of(g_pGlobalState->layerNamespaceLiveResample, [](const auto& kv) { return kv.second; }))
+        const bool layersWantLive  = (config.layersLiveResample && **config.layersLiveResample) ||
+            std::ranges::any_of(g_pGlobalState->layerNamespaceLiveResample, [](const auto& kv) { return kv.second; });
+        const bool windowsWantLive = config.windowsLiveResample && **config.windowsLiveResample;
+        if (!layersWantLive && !windowsWantLive)
             return;
 
         // same bit Hyprland tests: commits without damage change nothing behind us
@@ -167,7 +179,9 @@ namespace {
             return;
 
         const auto viewWindow = CWindow::fromView(view); // non-null only for a window root
-        if (!passesVisibilityGate(view, ownerWindow(viewWindow, resource)))
+        // Resolved once, shared with the window loop's self-exclusion below.
+        const auto committingWindow = ownerWindow(viewWindow, resource);
+        if (!passesVisibilityGate(view, committingWindow))
             return;
 
         // nullopt for anything Hyprland would not render (and for IME popups, which
@@ -211,6 +225,29 @@ namespace {
                 continue;
 
             state->markBackgroundDirty();
+        }
+
+        // Single global switch: unlike layers, windows have no per-namespace
+        // live-resample override to fall back on.
+        if (windowsWantLive) {
+            for (const auto& decorationRef : g_pGlobalState->decorations) {
+                auto* decoration = decorationRef.get();
+                if (!decoration)
+                    continue;
+
+                const auto window = decoration->getOwner();
+                // Null (destroyed) or the committing surface's own tree: a
+                // window's popups/subsurfaces are its own content, not its
+                // background, regardless of tree depth.
+                if (!window || window == committingWindow)
+                    continue;
+
+                const auto paddedBox = WindowGeometry::computePaddedGlobalBox(window, GlassRenderer::SAMPLE_PADDING_PX);
+                if (!paddedBox || !paddedBox->overlaps(damagedBox))
+                    continue;
+
+                decoration->markBackgroundDirty();
+            }
         }
     }
 
@@ -263,15 +300,20 @@ namespace {
     }
 }
 
-void LayerDamageObserver::refreshEnabled() {
+void BackgroundDamageObserver::refreshEnabled() {
     if (!g_pGlobalState)
         return;
 
+    // One predicate, computed here rather than duplicated per call site: any of
+    // layers, windows live-resample or self-sample wanting invalidation is
+    // reason enough to arm the observer, independent of the other two.
     const auto& config = g_pGlobalState->config;
-    setEnabled((config.layersEnabled && **config.layersEnabled) || g_pGlobalState->selfSampleConfigured);
+    const bool layersWant  = config.layersEnabled && **config.layersEnabled;
+    const bool windowsWant = config.windowsLiveResample && **config.windowsLiveResample;
+    setEnabled(layersWant || windowsWant || g_pGlobalState->selfSampleConfigured);
 }
 
-void LayerDamageObserver::setEnabled(bool enabled) {
+void BackgroundDamageObserver::setEnabled(bool enabled) {
     if (!g_pGlobalState)
         return;
 

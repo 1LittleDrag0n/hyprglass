@@ -1,3 +1,4 @@
+#include "BackgroundDamageObserver.hpp"
 #include "Diagnostics.hpp"
 #include "GlassDecoration.hpp"
 #include "GlassLayerCompositeElement.hpp"
@@ -5,8 +6,8 @@
 #include "GlassLayerSurface.hpp"
 #include "GlassRenderer.hpp"
 #include "Globals.hpp"
-#include "LayerDamageObserver.hpp"
 #include "PluginConfig.hpp"
+#include "RenderGuards.hpp"
 
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/Workspace.hpp>
@@ -170,6 +171,12 @@ static void beginWindowRender() {
     const auto window  = g_pHyprRenderer->m_renderData.currentWindow.lock();
     const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!window || !monitor)
+        return;
+
+    // overview/thumbnail plugins render this window standalone into their own
+    // framebuffer — a foreign replay must not touch dedupe bookkeeping either,
+    // not just skip glass.
+    if (RenderGuards::isForeignRender())
         return;
 
     auto& dedupe = g_pGlobalState->dedupe;
@@ -355,23 +362,10 @@ static void refreshSurfaceObserver() {
         return;
 
     g_pGlobalState->selfSampleConfigured = anySelfSampleConfigured(g_pGlobalState->config, g_pGlobalState->customPresets);
-    LayerDamageObserver::refreshEnabled();
+    BackgroundDamageObserver::refreshEnabled();
 }
 
 using renderLayerFn = void (*)(Render::IHyprRenderer*, PHLLS, PHLMONITOR, const Time::steady_tp&, bool, bool);
-
-// A renderLayer call that is not the monitor's own layer pass: a caller
-// rendering into its own framebuffer, or one that set a render modifier before
-// calling us (only observable from inside pass execution — a modifier queued as
-// a hints element is not applied yet while the pass is still being built).
-static bool isForeignLayerRender() {
-    const auto& renderData = g_pHyprRenderer->m_renderData;
-
-    if (renderData.mainFB && renderData.currentFB != renderData.mainFB)
-        return true;
-
-    return renderData.renderModif.enabled && !renderData.renderModif.modifs.empty();
-}
 
 static void hkRenderLayer(Render::IHyprRenderer* thisptr, PHLLS layerSurface, PHLMONITOR monitor,
                            const Time::steady_tp& now, bool popups, bool lockscreen) {
@@ -380,7 +374,7 @@ static void hkRenderLayer(Render::IHyprRenderer* thisptr, PHLLS layerSurface, PH
     // layers:enabled can flip without a config reload (hyprctl keyword), so follow it
     // here too; this is a no-op once the observer is in the requested state.
     // self_sample is followed from the window path, which resolves it anyway.
-    LayerDamageObserver::refreshEnabled();
+    BackgroundDamageObserver::refreshEnabled();
 
     // Hyprland renders closing layers from snapshots. Do not inject the glass
     // pipeline while that snapshot is being captured: the snapshot framebuffer
@@ -394,7 +388,7 @@ static void hkRenderLayer(Render::IHyprRenderer* thisptr, PHLLS layerSurface, PH
     // Leave a foreign render entirely alone: no cache creation, no generation bump,
     // no layer registration. Its framebuffer holds content the real frame must not
     // inherit, and its geometry is not the one our caches are keyed on.
-    if (isForeignLayerRender()) {
+    if (RenderGuards::isForeignRender()) {
         ((renderLayerFn)g_pGlobalState->renderLayerHook->m_original)(thisptr, layerSurface, monitor, now, popups, lockscreen);
         return;
     }
@@ -595,6 +589,31 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     g_pGlobalState->listeners.push_back(Event::bus()->m_events.render.stage.listen(
         [](eRenderStage stage) { onRenderStage(stage); }));
+
+    // Render-order fingerprint: reset the running hash at RENDER_BEGIN, then at
+    // RENDER_LAST_MOMENT compare it to last frame's and bump scene generation on
+    // a change. Both fire inside renderMonitor() strictly before endRender() runs
+    // the render pass, so a bump here reaches this same frame's resample checks.
+    g_pGlobalState->listeners.push_back(Event::bus()->m_events.render.stage.listen(
+        [](eRenderStage stage) {
+            if (stage != RENDER_BEGIN)
+                return;
+            if (const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock())
+                g_pGlobalState->renderFingerprints[monitor->m_id].runningHash = 0;
+        }));
+    g_pGlobalState->listeners.push_back(Event::bus()->m_events.render.stage.listen(
+        [](eRenderStage stage) {
+            if (stage != RENDER_LAST_MOMENT)
+                return;
+            const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+            if (!monitor)
+                return;
+            auto& fingerprint = g_pGlobalState->renderFingerprints[monitor->m_id];
+            if (fingerprint.runningHash == fingerprint.lastHash)
+                return;
+            g_pGlobalState->bumpSceneGeneration(monitor);
+            fingerprint.lastHash = fingerprint.runningHash;
+        }));
     g_pGlobalState->listeners.push_back(Event::bus()->m_events.window.moveToWorkspace.listen(
         [=](PHLWINDOW w, PHLWORKSPACE) { bumpWindowMonitor(w); }));
     g_pGlobalState->listeners.push_back(Event::bus()->m_events.workspace.active.listen(
@@ -685,7 +704,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
         return;
 
     g_pGlobalState->listeners.clear();
-    LayerDamageObserver::setEnabled(false);
+    BackgroundDamageObserver::setEnabled(false);
     Diagnostics::unregisterHyprCtlCommand(PHANDLE);
 
     // drop the redirect and the sink's elements while the plugin is still mapped

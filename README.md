@@ -256,6 +256,18 @@ hg.layer("debug-panel", { exclude = true })
 
 > Layer support hooks into Hyprland's internal render pipeline. This is version-sensitive and may break across Hyprland updates.
 
+### Window background cache
+
+Windows cache their sampled, blurred background and only re-sample it when something actually changed behind the window (it moved/resized, the window behind it changed, or the cache was just allocated) — the same idea as the layer `live_resample` cache above, always on.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `windows:background_cache` | bool | `true` (`1` in .conf) | Reuse a window's last sampled+blurred background instead of re-sampling it every frame. Set to `0` to always re-sample (pre-cache behavior). |
+| `windows:live_resample` | bool | `true` (`1` in .conf) | Re-render window glass when content behind it changes (e.g. a playing video, another window). GPU cost scales with background activity; static scenes stay free |
+| `windows:live_resample_fps` | int | `30` | Max background-dirty marks per second for windows. `0` = uncapped |
+
+> `hyprctl hyprglass stats` reports `win_hit`/`win_miss`/`win_defer`/`win_disc` per monitor to watch the cache in action.
+
 ### Per-window overrides
 
 Control the effect, theme, and preset per window via tags.
@@ -392,8 +404,8 @@ hyprctl j/hyprglass stats        # same, as JSON
 hyprglass stats
   stage timers: off (plugin:hyprglass:debug:timers = 0)
 
-  monitor        frames  win_draws  opaque_skip  layer_draws  cache_hit  cache_miss  blur_pass  sampled_mpx  glass_mpx
-  eDP-1            7212       3401         5122         1560       1420          92       5520        41.30      18.77
+  monitor        frames  win_draws  opaque_skip  win_hit  win_miss  win_defer  win_disc  layer_draws  layer_hit  layer_miss  blur_pass  sampled_mpx  glass_mpx
+  eDP-1            7212       3401         5122     3120       240         41         0         1560       1420          92       5520        41.30      18.77
   eDP-1          per frame: 0.47 win draws, 0.22 layer draws, 0.77 blur passes, 0.006 sampled mpx, 0.003 glass mpx
 ```
 

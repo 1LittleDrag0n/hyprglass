@@ -486,7 +486,12 @@ void applyGlassEffect(SP<Render::IFramebuffer> sampleFramebuffer, SP<Render::IFr
     shader->setUniformFloat(SHADER_ROUNDING_POWER, roundingPower);
 
     glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
-    g_pHyprOpenGL->scissor(rawBox);
+
+    // Only finalDamage is copied to the screen, and elementDamage (which finalDamage is a
+    // subset of) already covers every pixel we're visible at, so scissoring to the damage
+    // clips no pixel that would otherwise reach the screen.
+    CBox damageExtents = g_pHyprRenderer->m_renderData.damage.copy().intersect(rawBox).getExtents();
+    g_pHyprOpenGL->scissor(damageExtents.w > 0 && damageExtents.h > 0 ? damageExtents : rawBox);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     g_pHyprOpenGL->scissor(nullptr);
 }

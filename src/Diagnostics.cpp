@@ -145,9 +145,11 @@ std::string formatStats(eHyprCtlOutputFormat format) {
             first = false;
             json += std::format(
                 "    {{\"name\": \"{}\", \"frames\": {}, \"windowGlassDraws\": {}, \"windowOpaqueSkipped\": {}, "
+                "\"windowCacheHits\": {}, \"windowCacheMisses\": {}, \"windowDeferredResamples\": {}, \"windowPassDiscarded\": {}, "
                 "\"layerGlassDraws\": {}, \"layerCacheHits\": {}, \"layerCacheMisses\": {}, \"blurPasses\": {}, "
                 "\"sampledMegapixels\": {:.3f}, \"glassMegapixels\": {:.3f}, \"stageTimersAvgMicroseconds\": {{",
                 escapeJSONStrings(monitorLabel(id)), counters.frames, counters.windowGlassDraws, counters.windowOpaqueSkipped,
+                counters.windowCacheHits, counters.windowCacheMisses, counters.windowDeferredResamples, counters.windowPassDiscarded,
                 counters.layerGlassDraws, counters.layerCacheHits, counters.layerCacheMisses, counters.blurPasses,
                 counters.sampledMegapixels, counters.glassMegapixels);
 
@@ -178,15 +180,18 @@ std::string formatStats(eHyprCtlOutputFormat format) {
     if (s_counters.empty())
         out += "  (no frames recorded yet)\n";
 
-    out += std::format("\n  {:<14} {:>8} {:>10} {:>12} {:>12} {:>10} {:>11} {:>11} {:>12} {:>11}\n", "monitor", "frames",
-                        "win_draws", "opaque_skip", "layer_draws", "cache_hit", "cache_miss", "blur_pass", "sampled_mpx",
-                        "glass_mpx");
+    out += std::format(
+        "\n  {:<14} {:>8} {:>10} {:>12} {:>9} {:>9} {:>10} {:>9} {:>12} {:>10} {:>10} {:>10} {:>12} {:>11}\n", "monitor",
+        "frames", "win_draws", "opaque_skip", "win_hit", "win_miss", "win_defer", "win_disc", "layer_draws", "layer_hit",
+        "layer_miss", "blur_pass", "sampled_mpx", "glass_mpx");
 
     for (const auto& [id, counters] : s_counters) {
-        out += std::format("  {:<14} {:>8} {:>10} {:>12} {:>12} {:>10} {:>11} {:>11} {:>12.2f} {:>11.2f}\n", monitorLabel(id),
-                            counters.frames, counters.windowGlassDraws, counters.windowOpaqueSkipped, counters.layerGlassDraws,
-                            counters.layerCacheHits, counters.layerCacheMisses, counters.blurPasses, counters.sampledMegapixels,
-                            counters.glassMegapixels);
+        out += std::format(
+            "  {:<14} {:>8} {:>10} {:>12} {:>9} {:>9} {:>10} {:>9} {:>12} {:>10} {:>10} {:>10} {:>12.2f} {:>11.2f}\n",
+            monitorLabel(id), counters.frames, counters.windowGlassDraws, counters.windowOpaqueSkipped, counters.windowCacheHits,
+            counters.windowCacheMisses, counters.windowDeferredResamples, counters.windowPassDiscarded, counters.layerGlassDraws,
+            counters.layerCacheHits, counters.layerCacheMisses, counters.blurPasses, counters.sampledMegapixels,
+            counters.glassMegapixels);
 
         if (counters.frames > 0) {
             const double frames = static_cast<double>(counters.frames);
@@ -225,6 +230,22 @@ void recordWindowGlassDraw(MONITORID monitor) {
 
 void recordWindowOpaqueSkipped(MONITORID monitor) {
     countersFor(monitor).windowOpaqueSkipped++;
+}
+
+void recordWindowCacheHit(MONITORID monitor) {
+    countersFor(monitor).windowCacheHits++;
+}
+
+void recordWindowCacheMiss(MONITORID monitor) {
+    countersFor(monitor).windowCacheMisses++;
+}
+
+void recordWindowDeferredResample(MONITORID monitor) {
+    countersFor(monitor).windowDeferredResamples++;
+}
+
+void recordWindowPassDiscarded(MONITORID monitor) {
+    countersFor(monitor).windowPassDiscarded++;
 }
 
 void recordLayerGlassDraw(MONITORID monitor) {

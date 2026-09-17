@@ -16,9 +16,13 @@ namespace Diagnostics {
 // SGlobalState) because nothing outside this file reads or writes it —
 // reporting happens entirely inside the hyprctl command handler.
 struct SMonitorCounters {
-    uint64_t frames              = 0;
-    uint64_t windowGlassDraws    = 0;
-    uint64_t windowOpaqueSkipped = 0;
+    uint64_t frames                  = 0;
+    uint64_t windowGlassDraws        = 0;
+    uint64_t windowOpaqueSkipped     = 0;
+    uint64_t windowCacheHits         = 0;
+    uint64_t windowCacheMisses       = 0;
+    uint64_t windowDeferredResamples = 0;
+    uint64_t windowPassDiscarded     = 0;
     uint64_t layerGlassDraws     = 0;
     uint64_t layerCacheHits      = 0;
     uint64_t layerCacheMisses    = 0;
@@ -30,6 +34,13 @@ struct SMonitorCounters {
 void recordFrame(MONITORID monitor);
 void recordWindowGlassDraw(MONITORID monitor);
 void recordWindowOpaqueSkipped(MONITORID monitor);
+// Window background cache: a resample was skipped, ran because the
+// background changed, was postponed pending more damage, or the element
+// was dropped by simplify() before renderPass() ran.
+void recordWindowCacheHit(MONITORID monitor);
+void recordWindowCacheMiss(MONITORID monitor);
+void recordWindowDeferredResample(MONITORID monitor);
+void recordWindowPassDiscarded(MONITORID monitor);
 void recordLayerGlassDraw(MONITORID monitor);
 void recordLayerCacheHit(MONITORID monitor);
 void recordLayerCacheMiss(MONITORID monitor);
