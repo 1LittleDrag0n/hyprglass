@@ -76,6 +76,14 @@ uniform int maskMode;          // 0 = alpha threshold, 1 = protocol region
 uniform int regionRectCount;   // 0..16
 uniform vec4 regionRects[16];  // box-local pixels: xy = offset from box top-left, zw = size
 
+// Maps this fragment's own box UV into the sample texture's normalized space
+// before uvPadding is applied. Identity (offset 0, scale 1) unless the sample
+// texture covers a smaller area than this box — PROTOCOL_REGION layers only,
+// where the background is only ever sampled/blurred inside the blur region's
+// bounding box (see GlassRenderer::sampleBackground callers in GlassLayerSurface.cpp).
+uniform vec2 sampleUVOffset;
+uniform vec2 sampleUVScale;
+
 in vec2 v_texcoord;
 layout(location = 0) out vec4 fragColor;
 
@@ -83,12 +91,18 @@ layout(location = 0) out vec4 fragColor;
 // TEXTURE SAMPLING (window UV -> padded texture UV)
 // ============================================================================
 
+// Box UV -> sample-texture-local UV (undoes sampleUVOffset/uvScale's
+// shrink before the padding remap below sees it).
+vec2 toSampleBoxUV(vec2 wuv) {
+    return (wuv - sampleUVOffset) / sampleUVScale;
+}
+
 vec2 toTexUV(vec2 wuv) {
     return wuv * (1.0 - 2.0 * uvPadding) + uvPadding;
 }
 
 vec4 sampleBlurred(vec2 wuv) {
-    vec2 tuv = toTexUV(wuv);
+    vec2 tuv = toTexUV(toSampleBoxUV(wuv));
     return texture(tex, clamp(tuv, 0.001, 0.999));
 }
 

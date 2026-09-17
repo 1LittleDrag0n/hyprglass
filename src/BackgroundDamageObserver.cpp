@@ -211,11 +211,29 @@ namespace {
             if (!state->liveResampleEnabled())
                 continue;
 
-            const auto  monitor   = layer->m_monitor.lock();
-            const float monScale  = monitor ? monitor->m_scale : 1.0f;
-            CBox        sampleBox = CBox{layer->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT),
-                                         layer->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT)};
-            sampleBox.expand(GlassRenderer::SAMPLE_PADDING_PX / monScale);
+            // PROTOCOL_REGION: a commit overlapping only the non-region part of the
+            // layer can't affect the glass sample, so test against the region's own
+            // bounding box instead of the whole layer. ALPHA_THRESHOLD/NONE unchanged.
+            const auto  monitor  = layer->m_monitor.lock();
+            const float monScale = monitor ? monitor->m_scale : 1.0f;
+            CBox sampleBox;
+            if (state->resolveMaskSource() == CGlassLayerSurface::EMaskSource::PROTOCOL_REGION) {
+                const auto regionBox = state->regionBoundingBoxGlobal();
+                if (!regionBox)
+                    continue; // no region to invalidate against
+                sampleBox = *regionBox;
+                // sampleBackground() pads whatever box it's given by
+                // SAMPLE_PADDING_PX before blitting, so the real sampled/blurred
+                // area reaches this far beyond the region box itself — without
+                // this, a commit strictly inside that margin (but outside the
+                // region) would never overlap and the stale sample would never
+                // be marked dirty.
+                sampleBox.expand(GlassRenderer::SAMPLE_PADDING_PX / monScale);
+            } else {
+                sampleBox = CBox{layer->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT),
+                                  layer->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT)};
+                sampleBox.expand(GlassRenderer::SAMPLE_PADDING_PX / monScale);
+            }
 
             if (!sampleBox.overlaps(damagedBox))
                 continue;

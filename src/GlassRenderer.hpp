@@ -74,6 +74,14 @@ struct SMaskInfo {
     int                                        maskMode        = 0;
     std::array<SRegionRect, MAX_REGION_RECTS>  regionRects{};
     int                                        regionRectCount = 0;
+
+    // Maps the glass quad's own UV (spanning the full drawn box) into the
+    // sample texture's own normalized space, applied before uvPadding
+    // (toSampleBoxUV() in Shaders.hpp). Identity (no-op) unless
+    // sampleBackground() was given a box smaller than the drawn quad —
+    // PROTOCOL_REGION layers only; see GlassLayerSurface.cpp.
+    Vector2D sampleUVOffset{0.0, 0.0};
+    Vector2D sampleUVScale{1.0, 1.0};
 };
 
 // Affine map from source-framebuffer pixels into the sample framebuffer.

@@ -475,11 +475,21 @@ void applyGlassEffect(SP<Render::IFramebuffer> sampleFramebuffer, SP<Render::IFr
         if (mask->regionRectCount > 0)
             glUniform4fv(uniforms.regionRects, mask->regionRectCount,
                          reinterpret_cast<const float*>(mask->regionRects.data()));
+        glUniform2f(uniforms.sampleUVOffset,
+            static_cast<float>(mask->sampleUVOffset.x), static_cast<float>(mask->sampleUVOffset.y));
+        glUniform2f(uniforms.sampleUVScale,
+            static_cast<float>(mask->sampleUVScale.x), static_cast<float>(mask->sampleUVScale.y));
     } else {
         glUniform1i(uniforms.useMask, 0);
         glUniform1f(uniforms.maskAlphaThreshold, 0.001f);
         glUniform1i(uniforms.maskMode, 0);
         glUniform1i(uniforms.regionRectCount, 0);
+        // Windows, and layers outside PROTOCOL_REGION, always sample the same
+        // box they draw — identity, since this shader program's uniforms
+        // persist across draws that don't set them (a prior region-mode
+        // layer's non-identity value would otherwise leak into this draw).
+        glUniform2f(uniforms.sampleUVOffset, 0.0f, 0.0f);
+        glUniform2f(uniforms.sampleUVScale, 1.0f, 1.0f);
     }
 
     shader->setUniformFloat(SHADER_RADIUS, cornerRadius);

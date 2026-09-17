@@ -68,6 +68,8 @@ bool CShaderManager::compileGlassShader() {
     glassUniforms.regionRects         = glGetUniformLocation(program, "regionRects[0]");
     if (glassUniforms.regionRects == -1)
         glassUniforms.regionRects = glGetUniformLocation(program, "regionRects");
+    glassUniforms.sampleUVOffset      = glGetUniformLocation(program, "sampleUVOffset");
+    glassUniforms.sampleUVScale       = glGetUniformLocation(program, "sampleUVScale");
 
     return true;
 }

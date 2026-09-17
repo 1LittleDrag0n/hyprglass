@@ -43,6 +43,8 @@ struct SGlassUniforms {
     GLint maskMode = -1;
     GLint regionRectCount = -1;
     GLint regionRects = -1;
+    GLint sampleUVOffset = -1;
+    GLint sampleUVScale = -1;
 };
 
 struct SBlurUniforms {
