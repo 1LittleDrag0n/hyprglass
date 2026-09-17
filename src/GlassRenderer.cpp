@@ -199,9 +199,22 @@ void applyGlassEffect(SP<Render::IFramebuffer> sampleFramebuffer, SP<Render::IFr
     glUniform1f(uniforms.chromaticAberration, resolvePresetFloat(resolveContext, &SPresetValues::chromaticAberration, &SOverridableConfig::chromaticAberration));
     glUniform1f(uniforms.fresnelStrength,     resolvePresetFloat(resolveContext, &SPresetValues::fresnelStrength, &SOverridableConfig::fresnelStrength));
     glUniform1f(uniforms.specularStrength,    resolvePresetFloat(resolveContext, &SPresetValues::specularStrength, &SOverridableConfig::specularStrength));
+    glUniform1f(uniforms.specularAngle,       resolvePresetFloat(resolveContext, &SPresetValues::specularAngle, &SOverridableConfig::specularAngle));
     glUniform1f(uniforms.glassOpacity,        resolvePresetFloat(resolveContext, &SPresetValues::glassOpacity, &SOverridableConfig::glassOpacity) * alpha);
     glUniform1f(uniforms.edgeThickness,       resolvePresetFloat(resolveContext, &SPresetValues::edgeThickness, &SOverridableConfig::edgeThickness));
     glUniform1f(uniforms.lensDistortion,      resolvePresetFloat(resolveContext, &SPresetValues::lensDistortion, &SOverridableConfig::lensDistortion));
+    glUniform1f(uniforms.refractionFlow,      resolvePresetFloat(resolveContext, &SPresetValues::refractionFlow, &SOverridableConfig::refractionFlow));
+    glUniform1f(uniforms.refractionSpread,    resolvePresetFloat(resolveContext, &SPresetValues::refractionSpread, &SOverridableConfig::refractionSpread));
+    glUniform1f(uniforms.fresnelTint,         resolvePresetFloat(resolveContext, &SPresetValues::fresnelTint, &SOverridableConfig::fresnelTint));
+    glUniform1f(uniforms.bevelStrength,       resolvePresetFloat(resolveContext, &SPresetValues::bevelStrength, &SOverridableConfig::bevelStrength));
+    glUniform1f(uniforms.bevelSize,           resolvePresetFloat(resolveContext, &SPresetValues::bevelSize, &SOverridableConfig::bevelSize));
+    glUniform1f(uniforms.bevelTint,           resolvePresetFloat(resolveContext, &SPresetValues::bevelTint, &SOverridableConfig::bevelTint));
+    glUniform1f(uniforms.bevelAngle,          resolvePresetFloat(resolveContext, &SPresetValues::bevelAngle, &SOverridableConfig::bevelAngle));
+    glUniform1f(uniforms.bevelShadow,         resolvePresetFloat(resolveContext, &SPresetValues::bevelShadow, &SOverridableConfig::bevelShadow));
+
+    // bevel width is defined in logical px; scale it to framebuffer px per monitor
+    const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    glUniform1f(uniforms.monitorScale, monitor && monitor->m_scale > 0.0f ? monitor->m_scale : 1.0f);
 
     uploadThemeUniforms(resolveContext);
 
@@ -212,6 +225,22 @@ void applyGlassEffect(SP<Render::IFramebuffer> sampleFramebuffer, SP<Render::IFr
         static_cast<float>((tintColorValue >> 8) & 0xFF) / 255.0f);
     glUniform1f(uniforms.tintAlpha,
         static_cast<float>(tintColorValue & 0xFF) / 255.0f);
+
+    const int64_t fresnelColorValue = resolvePresetInt(resolveContext, &SPresetValues::fresnelColor, &SOverridableConfig::fresnelColor);
+    glUniform3f(uniforms.fresnelColor,
+        static_cast<float>((fresnelColorValue >> 24) & 0xFF) / 255.0f,
+        static_cast<float>((fresnelColorValue >> 16) & 0xFF) / 255.0f,
+        static_cast<float>((fresnelColorValue >> 8) & 0xFF) / 255.0f);
+    glUniform1f(uniforms.fresnelColorAlpha,
+        static_cast<float>(fresnelColorValue & 0xFF) / 255.0f);
+
+    const int64_t bevelColorValue = resolvePresetInt(resolveContext, &SPresetValues::bevelColor, &SOverridableConfig::bevelColor);
+    glUniform3f(uniforms.bevelColor,
+        static_cast<float>((bevelColorValue >> 24) & 0xFF) / 255.0f,
+        static_cast<float>((bevelColorValue >> 16) & 0xFF) / 255.0f,
+        static_cast<float>((bevelColorValue >> 8) & 0xFF) / 255.0f);
+    glUniform1f(uniforms.bevelColorAlpha,
+        static_cast<float>(bevelColorValue & 0xFF) / 255.0f);
 
     glUniform2f(uniforms.uvPadding,
         static_cast<float>(paddingRatio.x),

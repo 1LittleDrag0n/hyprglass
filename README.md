@@ -144,9 +144,20 @@ Settings resolve through: **preset chain** (theme variant, shared, inherited) th
 | `blur_strength` | float | `2.0` | — | — | Blur radius scale (`value * 12.0` px) |
 | `blur_iterations` | int | `3` | — | — | Gaussian blur passes (1-5) |
 | `refraction_strength` | float | `0.6` | — | — | Edge refraction intensity (0.0-1.0) |
+| `refraction_flow` | float | `0.0` | — | — | Where the edge distortion pulls: 0 toward the window center, 1 along the edges (0.0-1.0) |
+| `refraction_spread` | float | `1.0` | — | — | How deep the distortion reaches: 1 across the whole window, 0 only a rim with a flat center (0.0-1.0) |
 | `chromatic_aberration` | float | `0.5` | — | — | Spectral dispersion at edges (0.0-1.0) |
 | `fresnel_strength` | float | `0.6` | — | — | Edge glow intensity (0.0-1.0) |
+| `fresnel_tint` | float | `0.0` | — | — | Color of the fresnel rim light: 0 white, 1 the colors behind the glass (0.0-1.0) |
+| `fresnel_color` | color | `0xffffff00` | — | — | Color of the fresnel rim light; alpha sets how much it replaces white (0xRRGGBBAA) |
 | `specular_strength` | float | `0.8` | — | — | Specular highlight brightness (0.0-1.0) |
+| `specular_angle` | float | `0.0` | — | — | Where the specular highlight comes from, in degrees: 0 from the top, 90 from the right, clockwise |
+| `bevel_strength` | float | `0.0` | — | — | Thin lit line along the glass edge, a nicer border (0.0-1.0) |
+| `bevel_size` | float | `6.0` | — | — | Width of the bevel line in logical pixels, uniform across monitor scales |
+| `bevel_color` | color | `0xffffff00` | — | — | Color of the bevel line; alpha sets how much it replaces white, dark colors give a dark line (0xRRGGBBAA) |
+| `bevel_tint` | float | `0.0` | — | — | Tint of the bevel line: 0 its own color, 1 the colors behind the glass (0.0-1.0) |
+| `bevel_angle` | float | `315.0` | — | — | Where the bevel light comes from, in degrees: 0 from the top, 90 from the right, clockwise |
+| `bevel_shadow` | float | `0.0` | — | — | Darkening of the bevel line on the side away from the light (0.0-1.0) |
 | `glass_opacity` | float | `1.0` | — | — | Overall glass opacity (0.0-1.0) |
 | `edge_thickness` | float | `0.06` | — | — | Bezel width, fraction of smallest dimension (0.0-0.15) |
 | `tint_color` | color | `0x8899aa22` | — | — | Glass tint RRGGBBAA hex. Alpha = tint strength |
@@ -267,7 +278,7 @@ Presets are named config overrides. They can be **built-in** or **user-defined**
 
 Each preset can have shared values (theme-agnostic), a dark variant, a light variant, and can inherit from another preset.
 
-#### Built-in presets
+#### Built-in presets (Open to PR)
 
 Always available. Activate via `default_preset` or per-window tags.
 
@@ -277,6 +288,7 @@ Always available. Activate via `default_preset` or per-window tags.
 | `subtle` | Minimal glass effect. Light blur, reduced refraction and highlights. |
 | `clear` | Minimal transparent effect. Like a transparent rounded border glass plate. |
 | `glass` | Solid glass block effect with a lot of chromatic aberration. |
+| `pomme` | Apple look-alike liquid glass, keep in mind it's an approximation, and apple does not apply it on big window with square corners on purpose (open to PR). |
 
 **Note:** These presets are starting points. Submit improvements or your own presets through issues or PRs (with screenshots).
 
