@@ -17,15 +17,17 @@ precision highp float;
  *     the window boundary, creating natural color bleeding
  *
  * Rendering layers:
- * 1. Edge refraction via smooth outward direction + exponential proximity
+ * 1. Edge refraction via smooth outward direction (optionally along the edges,
+ *    optionally rim-only) + exponential proximity
  * 2. Chromatic aberration (per-channel refraction scale)
  * 3. Edge raw-texture blend for vivid color pickup
  * 4. Subtle center dome lens magnification
  * 5. Frosted tint (brightness boost + desaturation)
  * 6. Configurable color tint overlay
- * 7. Fresnel edge glow
- * 8. Specular highlight (top)
- * 9. Inner shadow (bottom rim)
+ * 7. Bevel (thin lit line at the edge)
+ * 8. Fresnel edge glow (white or tinted by the background)
+ * 9. Specular highlight (top)
+ * 10. Inner shadow (bottom rim)
  */
 
 uniform sampler2D tex;
@@ -50,6 +52,20 @@ uniform float vibrancyDarkness;
 uniform float adaptiveDim;
 uniform float adaptiveBoost;
 uniform float roundingPower;
+uniform float refractionFlow;
+uniform float refractionSpread;
+uniform float fresnelTint;
+uniform float bevelStrength;
+uniform float bevelSize;
+uniform float monitorScale;
+uniform vec3 fresnelColor;
+uniform float fresnelColorAlpha;
+uniform vec3 bevelColor;
+uniform float bevelColorAlpha;
+uniform float bevelTint;
+uniform float bevelAngle;
+uniform float bevelShadow;
+uniform float specularAngle;
 
 uniform sampler2D maskTex;
 uniform int useMask;
@@ -99,7 +115,7 @@ float getCornerSDF(vec2 uv) {
 // ============================================================================
 // REFRACTION DIRECTION
 // Pixel-space direction toward window center — perfectly smooth everywhere,
-// no SDF gradient needed. On straight edges the perpendicular pixel distance
+// no SDF gradient needed (optional edge-following blend below). On straight edges the perpendicular pixel distance
 // dominates, giving approximately edge-normal direction. At corners it
 // naturally follows the diagonal.
 // ============================================================================
@@ -108,6 +124,33 @@ vec2 refractionDir(vec2 uv) {
     vec2 toCenterPx = (vec2(0.5) - uv) * fullSize;
     float len = length(toCenterPx);
     return len > 0.1 ? toCenterPx / len : vec2(0.0);
+}
+
+// Smooth edge-following field: points into the box, hugging each edge's normal
+// away from the corners and blending crease-free through the diagonals.
+vec2 edgeDir(vec2 posPx) {
+    vec2 halfSize = fullSize * 0.5;
+    vec2 n = abs(posPx) / halfSize;
+    vec2 g = sign(posPx) * pow(n, vec2(7.0)) / halfSize;
+    float len = length(g);
+    return len > 0.0 ? -g / len : vec2(0.0);   // points INTO the box
+}
+
+// light direction for a clockwise angle in degrees, 0 = from the top (screen y grows downward)
+vec2 lightDir(float angleDeg) {
+    float a = radians(angleDeg);
+    return vec2(sin(a), -cos(a));
+}
+
+// exact outward normal from the SDF gradient; only meaningful right at the edge
+vec2 sdfOutwardNormal(vec2 uv) {
+    vec2 h = vec2(1.0) / fullSize;
+    vec2 grad = vec2(
+        getCornerSDF(uv + vec2(h.x, 0.0)) - getCornerSDF(uv - vec2(h.x, 0.0)),
+        getCornerSDF(uv + vec2(0.0, h.y)) - getCornerSDF(uv - vec2(0.0, h.y))
+    );
+    float len = length(grad);
+    return len > 0.0 ? grad / len : vec2(0.0, -1.0);
 }
 
 // ============================================================================
@@ -162,6 +205,7 @@ void main() {
     // ========================================
     float edgeProximity = exp(cornerSdf / bezelWidthPx);
     vec2 inwardDir = refractionDir(uv);
+    vec2 posPx = (uv - 0.5) * fullSize; // pixel-space position for the edge-flow direction below
 
     // ========================================
     // EDGE REFRACTION
@@ -171,8 +215,22 @@ void main() {
     // beyond the window boundary.
     // ========================================
     float refractionPx = refractionStrength * 50.0;
-    float refractionMag = edgeProximity * refractionPx;
-    vec2 baseOffset = inwardDir * refractionMag / fullSize;
+    float lensFalloff = edgeProximity;
+    if (refractionSpread < 0.999) {
+        // rim-only lens: window the exponential tail so the centre stays flat
+        float depth = -cornerSdf;
+        float tailWindow = 1.0 - smoothstep(1.5 * bezelWidthPx, 3.0 * bezelWidthPx, depth);
+        lensFalloff = mix(edgeProximity * tailWindow, edgeProximity, refractionSpread);
+    }
+    float refractionMag = lensFalloff * refractionPx;
+    vec2 dir = inwardDir;
+    if (refractionFlow > 0.001) {
+        // pull along the edges instead of toward the centre
+        vec2 mixedDir = mix(inwardDir, edgeDir(posPx), refractionFlow);
+        float mixedLen = length(mixedDir);
+        dir = mixedLen > 0.0001 ? mixedDir / mixedLen : inwardDir;
+    }
+    vec2 baseOffset = dir * refractionMag / fullSize;
 
     // ========================================
     // CHROMATIC ABERRATION — per-channel refraction scale
@@ -250,18 +308,56 @@ void main() {
     color = mix(color, tintColor, tintAlpha);
 
     // ========================================
+    // BEVEL — thin lit line hugging the edge, brightest on the side facing the light
+    // ========================================
+    if (bevelStrength > 0.001) {
+        float sizePx = max(bevelSize * monitorScale, 1.0);   // logical px, uniform across monitor scales
+        float core = 0.25 * sizePx;
+        float tail = sizePx;
+        float ring = (1.0 - smoothstep(-core, 0.0, cornerSdf)) * smoothstep(-tail, -core, cornerSdf);
+
+        // lit side faces the light, the far side fades out and can be shadowed
+        float facing = clamp(dot(sdfOutwardNormal(uv), lightDir(bevelAngle)) * 0.5 + 0.5, 0.0, 1.0);
+
+        vec3 bevelLight = vec3(1.0);
+        if (bevelColorAlpha > 0.001) bevelLight = mix(vec3(1.0), bevelColor, bevelColorAlpha);   // a dark colour gives a dark line
+        if (bevelTint > 0.001) {
+            float maxC = max(max(color.r, color.g), color.b);
+            bevelLight = mix(bevelLight, maxC > 0.001 ? color / maxC : vec3(1.0), bevelTint);
+        }
+
+        color = mix(color, bevelLight, ring * facing * bevelStrength);
+        if (bevelShadow > 0.001)
+            color = mix(color, vec3(0.0), ring * (1.0 - facing) * bevelShadow);
+    }
+
+    // ========================================
     // FRESNEL RIM GLOW (edge zone)
     // ========================================
     if (fresnelStrength > 0.001) {
         float fresnel = edgeProximity * edgeProximity * fresnelStrength * 0.15;
-        color += vec3(1.0) * fresnel;
+        vec3 fresnelLight = vec3(1.0);
+        if (fresnelColorAlpha > 0.001) fresnelLight = mix(vec3(1.0), fresnelColor, fresnelColorAlpha);   // chosen colour, then the tint below
+        if (fresnelTint > 0.001) {
+            // rim light in the background's own hue, at full brightness so the gain matches white
+            float maxC = max(max(color.r, color.g), color.b);
+            fresnelLight = mix(fresnelLight, maxC > 0.001 ? color / maxC : vec3(1.0), fresnelTint);
+        }
+        color += fresnelLight * fresnel;
     }
 
     // ========================================
     // SPECULAR — subtle top highlight (edge zone)
     // ========================================
     if (specularStrength > 0.001) {
-        float topBias = pow(max(1.0 - uv.y, 0.0), 2.0);
+        float specT = max(1.0 - uv.y, 0.0);
+        if (abs(specularAngle) > 0.001) {
+            // rotate the highlight gradient toward the light: at angle 0, lightDir gives
+            // (0,-1) and dot(uv-0.5, L) = 0.5-uv.y, so 0.5+dot(...) reduces to 1-uv.y exactly
+            vec2 L = lightDir(specularAngle);
+            specT = clamp(0.5 + dot(uv - 0.5, L), 0.0, 1.0);
+        }
+        float topBias = pow(specT, 2.0);
         float spec = topBias * edgeProximity * edgeProximity * specularStrength * 0.08;
         color += vec3(1.0, 0.99, 0.97) * spec;
     }

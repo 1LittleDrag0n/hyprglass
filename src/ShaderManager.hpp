@@ -19,7 +19,21 @@ struct SGlassUniforms {
     GLint vibrancyDarkness = -1;
     GLint adaptiveDim = -1;
     GLint adaptiveBoost = -1;
-    
+    GLint refractionFlow = -1;
+    GLint refractionSpread = -1;
+    GLint fresnelTint = -1;
+    GLint bevelStrength = -1;
+    GLint bevelSize = -1;
+    GLint monitorScale = -1;
+    GLint fresnelColor = -1;
+    GLint fresnelColorAlpha = -1;
+    GLint bevelColor = -1;
+    GLint bevelColorAlpha = -1;
+    GLint bevelTint = -1;
+    GLint bevelAngle = -1;
+    GLint bevelShadow = -1;
+    GLint specularAngle = -1;
+
     // Layers only: temp FBO surface mask for content-aware glass
     GLint maskTex = -1;
     GLint useMask = -1;
