@@ -4,6 +4,7 @@
 
 #include <array>
 #include <GLES3/gl32.h>
+#include <hyprland/src/desktop/DesktopTypes.hpp>
 #include <hyprland/src/render/Framebuffer.hpp>
 #include <hyprutils/math/Box.hpp>
 #include <hyprutils/math/Vector2D.hpp>
@@ -45,8 +46,28 @@ struct SMaskInfo {
     int                                        regionRectCount = 0;
 };
 
+// Affine map from source-framebuffer pixels into the sample framebuffer.
+// sampleBackground() blits through it and blendOwnContent() draws through it;
+// both derive every coordinate from here so the two can never drift apart.
+struct SSampleMap {
+    int   fullWidth = 1, fullHeight = 1;              // padded box, framebuffer pixels
+    int   width = 1, height = 1;                      // sample framebuffer size
+    int   srcX0 = 0, srcY0 = 0, srcX1 = 1, srcY1 = 1; // padded box in source pixels, (srcX0, srcY0) lands on sample (0, 0)
+    float scaleX = 1, scaleY = 1;
+
+    [[nodiscard]] CBox toSample(const CBox& framebufferBox) const;
+};
+
+[[nodiscard]] SSampleMap sampleMapFor(const CBox& box, int downscale);
+
 void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IFramebuffer> sourceFramebuffer,
                        CBox box, Vector2D& outPaddingRatio, int downscale = 1);
+
+// Draws the window's own committed surfaces over the sampled background, so the
+// blur that follows works on a mix of the desktop and the window's own content.
+// box is the same framebuffer-space box sampleBackground() was given.
+void blendOwnContent(SP<Render::IFramebuffer>& sampleFramebuffer, PHLWINDOW window, PHLMONITOR monitor,
+                      const CBox& box, int downscale, float amount, float cornerRadius, float roundingPower);
 
 // callerFramebuffer is re-bound after the blur ping-pong; the viewport is
 // restored from its size so it always matches the re-bound framebuffer

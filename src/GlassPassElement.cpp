@@ -7,8 +7,16 @@ CGlassPassElement::CGlassPassElement(const SGlassPassData& data)
     : m_data(data) {}
 
 std::vector<UP<IPassElement>> CGlassPassElement::draw() {
-    if (m_data.decoration.valid())
-        m_data.decoration->renderPass(g_pHyprRenderer->m_renderData.pMonitor.lock(), m_data.alpha);
+    if (!m_data.decoration.valid())
+        return {};
+
+    // Hyprland renders a floating window over fullscreen more than once per
+    // frame; every copy but the last queued is a no-op, so the glass is applied
+    // exactly once and samples the framebuffer as it is under the last copy.
+    if (!m_data.decoration->isCurrentGlassPass(m_data.frameSerial, m_data.queueIndex))
+        return {};
+
+    m_data.decoration->renderPass(g_pHyprRenderer->m_renderData.pMonitor.lock(), m_data.alpha);
 
     return {};
 }
@@ -26,11 +34,11 @@ std::optional<CBox> CGlassPassElement::boundingBox() {
     if (!box)
         return std::nullopt;
 
-    // Expand by our sampling padding so the render pass damages the full
-    // area we read from. Without this, wallpaper outside the window box
-    // but inside our padding isn't re-rendered, leaving stale content.
-    const float padding = GlassRenderer::SAMPLE_PADDING_PX / monitor->m_scale;
-    box->expand(padding);
+    // Expand by the sampling margin so the pass damages everything we read from.
+    // Hyprland scales boundingBox() by the monitor scale itself, so hand it
+    // logical units; the margin is framebuffer pixels, hence / scale.
+    const float scale = monitor->m_scale > 0.0f ? monitor->m_scale : 1.0f;
+    box->scale(1.0 / scale).expand(GlassRenderer::SAMPLE_PADDING_PX / scale);
     return box;
 }
 

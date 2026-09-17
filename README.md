@@ -162,6 +162,7 @@ Settings resolve through: **preset chain** (theme variant, shared, inherited) th
 | `edge_thickness` | float | `0.06` | — | — | Bezel width, fraction of smallest dimension (0.0-0.15) |
 | `tint_color` | color | `0x8899aa22` | — | — | Glass tint RRGGBBAA hex. Alpha = tint strength |
 | `lens_distortion` | float | `0.5` | — | — | Center dome magnification (0.0-1.0) |
+| `self_sample` | float | `0.0` | — | — | Mixes the window's own content into the glass behind it (0.0-1.0). Windows only |
 | `brightness` | float | — | `0.82` | `1.12` | Brightness multiplier |
 | `contrast` | float | — | `0.90` | `0.92` | Contrast around midpoint |
 | `saturation` | float | — | `0.80` | `0.85` | Desaturation (0 = grayscale, 1 = full) |
@@ -171,6 +172,35 @@ Settings resolve through: **preset chain** (theme variant, shared, inherited) th
 | `adaptive_boost` | float | — | `0.0` | `0.4` | Boosts dark areas behind the glass (black is black 0 -to- 1 black becomes white) |
 
 `—` in Global Default = falls through to per-theme default. `—` in Dark/Light = inherits global value.
+
+#### Self sampling
+
+`self_sample` needs a translucent window: its content is composited over the sampled desktop.
+
+- At `1.0` the pane shows the window's own pixels. Where the client draws translucent ones (terminal transparency), the desktop still shows through
+- A window made see-through by `windowrule = opacity` draws opaque pixels, so its pane is entirely its own content
+- Raise `blur_strength` with it, or the window's own text stays readable in its glass
+- A window showing the screen (screen-share preview, OBS) sees a one-frame-old copy of itself
+- Transformed monitors (rotated or flipped) and layer surfaces ignore it
+
+**Cost:** a self-sampling window re-blurs its whole pane whenever its content changes, so busy windows cost more than static ones.
+
+**On the fly:**
+```bash
+hyprctl keyword plugin:hyprglass:self_sample 1.0
+```
+
+**Lua:**
+```lua
+hg.config({ self_sample = 0.6 })
+hg.preset("aura", { inherits = "glass", self_sample = 1.0, blur_strength = 2.5 })
+```
+
+**Legacy .conf:**
+```ini
+self_sample = 0.6
+preset = name:aura, inherits:glass, self_sample:1.0, blur_strength:2.5
+```
 
 ### Layer surfaces
 
@@ -325,7 +355,7 @@ preset = name:contrasted, inherits:high_contrast, contrast:1.2
 
 The window/layer is modeled as a **thick convex glass slab**. The rendering pipeline per window:
 
-1. **Background sampling** — The framebuffer behind the window is captured with padding (content beyond the window boundary is included).
+1. **Background sampling** — The framebuffer behind the window is captured with padding (content beyond the window boundary is included). `self_sample` mixes the window's own content into this capture.
 2. **Gaussian blur** — Multi-pass two-pass (horizontal + vertical) Gaussian blur for the frosted look.
 3. **Glass height field** — An SDF-based height profile: 1.0 deep inside the window, smooth S-curve to 0.0 at the edge. The transition width is `edge_thickness`.
 4. **Edge refraction** — The height field gradient drives UV displacement. At the center the gradient is near-zero (no distortion). At the edges the gradient is steep, pushing sample UVs outward — pulling in content from beyond the window boundary. This creates natural color bleeding.

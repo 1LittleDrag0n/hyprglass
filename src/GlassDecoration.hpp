@@ -26,6 +26,13 @@ class CGlassDecoration : public IHyprWindowDecoration {
     void                    renderPass(PHLMONITOR monitor, const float& alpha);
     void                    onFullscreenStateChanged();
 
+    // Owner test without the shared_ptr copy getOwner() hands out.
+    [[nodiscard]] bool  ownsWindow(const PHLWINDOW& window) const { return m_window == window; }
+    // self_sample as of the last rendered frame, 0 when the glass is off. Read on
+    // every watched surface commit, so it must not walk the preset chain.
+    [[nodiscard]] float lastSelfSample() const { return m_lastSelfSample; }
+
+    // Weak over the UP Hyprland owns: use .get()/-> only, never .lock().
     WP<CGlassDecoration> m_self;
 
   private:
@@ -43,6 +50,19 @@ class CGlassDecoration : public IHyprWindowDecoration {
     // snapshot taken before plugin decorations render — without noblur the
     // glass is invisible on static windows (#46).
     bool m_noBlurApplied = false;
+
+    float m_lastSelfSample = 0.0f;
+
+    // Frame serial the last glass element was queued for, and its index in that
+    // frame. Hyprland renders a floating window over fullscreen more than once
+    // per frame, and only the last glass may sample and blur.
+    uint64_t m_glassFrameSerial = 0;
+    uint32_t m_glassQueueIndex  = 0;
+
+    void               queueGlassPass(float alpha);
+    [[nodiscard]] bool isCurrentGlassPass(uint64_t serial, uint32_t index) const {
+        return serial == 0 || (serial == m_glassFrameSerial && index == m_glassQueueIndex);
+    }
 
     void updateNoBlurProp(bool glassEnabled);
     void withdrawNoBlur();

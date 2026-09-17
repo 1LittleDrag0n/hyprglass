@@ -3,6 +3,7 @@
 #include "GlassPassElement.hpp"
 #include "GlassRenderer.hpp"
 #include "Globals.hpp"
+#include "LayerDamageObserver.hpp"
 #include "WindowGeometry.hpp"
 
 #include <algorithm>
@@ -129,6 +130,10 @@ std::string CGlassDecoration::resolvePresetName() const {
     return "default";
 }
 
+static float selfSampleFor(const SResolveContext& ctx) {
+    return std::clamp(resolvePresetFloat(ctx, &SPresetValues::selfSample, &SOverridableConfig::selfSample), 0.0f, 1.0f);
+}
+
 SDecorationPositioningInfo CGlassDecoration::getPositioningInfo() {
     SDecorationPositioningInfo info;
     info.priority       = 10000;
@@ -139,17 +144,48 @@ SDecorationPositioningInfo CGlassDecoration::getPositioningInfo() {
 
 void CGlassDecoration::onPositioningReply(const SDecorationPositioningReply& reply) {}
 
+void CGlassDecoration::queueGlassPass(float alpha) {
+    // A duplicate copy is redirected into the dedupe sink and dropped whole: it
+    // needs no glass, and stamping it would leave the surviving element stale.
+    if (g_pGlobalState->dedupe.guard)
+        return;
+
+    CGlassPassElement::SGlassPassData data{m_self, alpha};
+
+    // Only the real monitor pass is de-duplicated: snapshots, screencopy and
+    // overview framebuffers render the window once, out of frame order.
+    const bool managed = g_pGlobalState->frameSerial != 0 && !g_pHyprRenderer->m_bRenderingSnapshot &&
+        g_pHyprRenderer->m_renderData.projectionType == Render::RPT_MONITOR;
+
+    if (managed) {
+        if (m_glassFrameSerial != g_pGlobalState->frameSerial) {
+            m_glassFrameSerial = g_pGlobalState->frameSerial;
+            m_glassQueueIndex  = 0;
+        } else
+            ++m_glassQueueIndex;
+
+        data.frameSerial = m_glassFrameSerial;
+        data.queueIndex  = m_glassQueueIndex;
+    }
+
+    // m_renderPass, never addPassElement: draw() runs inside Hyprland's own
+    // per-window redirect for transformed windows (motion blur), whose pass
+    // renders into a work buffer cleared to transparent — nothing to sample.
+    g_pHyprRenderer->m_renderPass.add(makeUnique<CGlassPassElement>(data));
+}
+
 void CGlassDecoration::draw(PHLMONITOR monitor, float const& alpha) {
     if (!g_pGlobalState)
         return;
 
     const bool enabled = resolveEnabled();
     updateNoBlurProp(enabled);
-    if (!enabled)
+    if (!enabled) {
+        m_lastSelfSample = 0.0f;
         return;
+    }
 
-    CGlassPassElement::SGlassPassData data{m_self, alpha};
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CGlassPassElement>(data));
+    queueGlassPass(alpha);
 
     // A slide translates the scene under us without any geometry change, and
     // Hyprland's per-tick window damage carries none of our sampling padding.
@@ -203,10 +239,6 @@ void CGlassDecoration::renderPass(PHLMONITOR monitor, const float& alpha) {
 
     GlassRenderer::sampleBackground(m_sampleFramebuffer, source, transformBox, m_samplePaddingRatio, downscale);
 
-    float blurRadius     = blurStrength * 12.0f / downscale;
-    int blurIterations   = std::clamp(static_cast<int>(resolvePresetInt(ctx, &SPresetValues::blurIterations, &SOverridableConfig::blurIterations)), 1, 5);
-    GlassRenderer::blurBackground(m_sampleFramebuffer, blurRadius, blurIterations, source);
-
     float monitorScale  = monitor->m_scale;
 
     // Hyprland renders internal-fullscreen windows unrounded (dontRound), we need to
@@ -214,6 +246,24 @@ void CGlassDecoration::renderPass(PHLMONITOR monitor, const float& alpha) {
     const bool fsUnrounded = Fullscreen::controller()->getFullscreenModes(window).internal == Fullscreen::FSMODE_FULLSCREEN;
     float cornerRadius  = fsUnrounded ? 0.0f : window->rounding() * monitorScale;
     float roundingPower = window->roundingPower();
+
+    const float selfSample = selfSampleFor(ctx);
+    m_lastSelfSample       = selfSample;
+    if (selfSample > 0.0f) {
+        // hyprctl keyword emits no config.reloaded, and a setup without layer
+        // surfaces has no other place that would notice self_sample turning on
+        if (!g_pGlobalState->selfSampleConfigured) {
+            g_pGlobalState->selfSampleConfigured = true;
+            LayerDamageObserver::refreshEnabled();
+        }
+
+        GlassRenderer::blendOwnContent(m_sampleFramebuffer, window, monitor, transformBox, downscale,
+                                       selfSample, cornerRadius, roundingPower);
+    }
+
+    float blurRadius     = blurStrength * 12.0f / downscale;
+    int blurIterations   = std::clamp(static_cast<int>(resolvePresetInt(ctx, &SPresetValues::blurIterations, &SOverridableConfig::blurIterations)), 1, 5);
+    GlassRenderer::blurBackground(m_sampleFramebuffer, blurRadius, blurIterations, source);
 
     // The render alpha Hyprland hands decorations is activeInactive * fade.
     // Glass must follow fades (open/close, fullscreen, workspace moves) but

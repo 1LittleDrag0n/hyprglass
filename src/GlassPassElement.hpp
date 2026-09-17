@@ -4,6 +4,7 @@
 #include <hyprutils/math/Box.hpp>
 #include <hyprutils/math/Region.hpp>
 #include <hyprland/src/helpers/memory/Memory.hpp>
+#include <cstdint>
 
 class CGlassDecoration;
 
@@ -12,6 +13,9 @@ class CGlassPassElement : public IPassElement {
     struct SGlassPassData {
         WP<CGlassDecoration> decoration;
         float                alpha = 1.0f;
+        // Stamped in CGlassDecoration::queueGlassPass. 0 = pass we do not de-duplicate.
+        uint64_t             frameSerial = 0;
+        uint32_t             queueIndex  = 0;
     };
 
     explicit CGlassPassElement(const SGlassPassData& data);

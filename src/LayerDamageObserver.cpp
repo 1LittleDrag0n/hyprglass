@@ -1,5 +1,6 @@
 #include "LayerDamageObserver.hpp"
 
+#include "GlassDecoration.hpp"
 #include "GlassLayerSurface.hpp"
 #include "GlassRenderer.hpp"
 #include "Globals.hpp"
@@ -14,6 +15,8 @@
 #include <hyprland/src/protocols/types/SurfaceRole.hpp>
 
 #include <algorithm>
+#include <exception>
+#include <format>
 
 using namespace Desktop::View;
 
@@ -83,6 +86,51 @@ namespace {
             return false;
 
         return !window->m_workspace || window->m_workspace->m_visible;
+    }
+
+    // A self-sampling window draws its own content into its glass, so a commit that
+    // changes that content changes the whole pane. Hyprland only copies the damaged
+    // region out of the offload framebuffer (OpenGL.cpp end()), so without widening
+    // here the pane keeps its previous blurred self image outside the damaged rect.
+    void damageSelfSamplingWindow(const SP<CWLSurfaceResource>& resource) {
+        if (!g_pGlobalState || !g_pGlobalState->selfSampleConfigured || g_pGlobalState->decorations.empty())
+            return;
+
+        if (!resource->m_current.updated.bits.damage)
+            return;
+
+        const auto wlSurface = CWLSurface::fromResource(resource);
+        if (!wlSurface)
+            return;
+
+        const auto view = wlSurface->view();
+        if (!view || view->type() == VIEW_TYPE_LOCK_SCREEN)
+            return;
+
+        const auto window = ownerWindow(CWindow::fromView(view), resource);
+        if (!window || !passesVisibilityGate(view, window))
+            return;
+
+        // Match the committing window to its decoration first: only that one can
+        // want the widened damage, and only it is worth reading a value off.
+        if (auto* decoration = glassDecorationFor(window); decoration && decoration->lastSelfSample() > 0.0f)
+            decoration->damageEntire();
+    }
+
+    // Signal callbacks run inside Hyprland's emit, so an escaping exception would
+    // unwind through the compositor. Covers exceptions only, not asserts.
+    bool listenerExceptionReported = false;
+
+    void reportListenerException(std::string_view what) {
+        if (listenerExceptionReported)
+            return;
+
+        listenerExceptionReported = true;
+        HyprlandAPI::addNotificationV2(PHANDLE, {
+            {"text", std::format("[{}] exception in surface listener: {}", PLUGIN_NAME, what)},
+            {"time", (uint64_t)8000},
+            {"color", CHyprColor{1.0, 0.8, 0.2, 1.0}},
+        });
     }
 
     bool surfaceInTree(const SP<CWLSurfaceResource>& surface, const SP<CWLSurfaceResource>& root) {
@@ -182,14 +230,28 @@ namespace {
 
         auto& entry  = watched[key];
         entry.commit = resource->m_events.commit.listen([key] {
-            if (const auto surface = key.lock())
-                onSurfaceCommit(surface);
+            try {
+                if (const auto surface = key.lock()) {
+                    damageSelfSamplingWindow(surface);
+                    onSurfaceCommit(surface);
+                }
+            } catch (const std::exception& e) {
+                reportListenerException(e.what());
+            } catch (...) {
+                reportListenerException("unknown exception");
+            }
         });
         // erasing from inside the callback is safe: the emitting signal holds a
         // strong ref for the whole emit and the capture is by value
         entry.destroy = wlSurface->m_events.destroy.listen([key] {
-            if (g_pGlobalState)
-                g_pGlobalState->watchedSurfaces.erase(key);
+            try {
+                if (g_pGlobalState)
+                    g_pGlobalState->watchedSurfaces.erase(key);
+            } catch (const std::exception& e) {
+                reportListenerException(e.what());
+            } catch (...) {
+                reportListenerException("unknown exception");
+            }
         });
     }
 
@@ -199,6 +261,14 @@ namespace {
 
         watchSurface(view->resource());
     }
+}
+
+void LayerDamageObserver::refreshEnabled() {
+    if (!g_pGlobalState)
+        return;
+
+    const auto& config = g_pGlobalState->config;
+    setEnabled((config.layersEnabled && **config.layersEnabled) || g_pGlobalState->selfSampleConfigured);
 }
 
 void LayerDamageObserver::setEnabled(bool enabled) {

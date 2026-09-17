@@ -48,6 +48,7 @@ namespace GlobalDefaults {
     inline constexpr float   BEVEL_ANGLE          = 315.0f;
     inline constexpr float   BEVEL_SHADOW         = 0.0f;
     inline constexpr float   SPECULAR_ANGLE       = 0.0f;
+    inline constexpr float   SELF_SAMPLE          = 0.0f;
 } // namespace GlobalDefaults
 
 // ── Built-in presets ─────────────────────────────────────────────────────────
