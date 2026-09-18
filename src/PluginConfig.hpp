@@ -64,6 +64,7 @@ inline constexpr auto DEFAULT_THEME       = "plugin:hyprglass:default_theme";
 inline constexpr auto DEFAULT_PRESET      = "plugin:hyprglass:default_preset";
 inline constexpr auto MANAGE_WINDOW_BLUR  = "plugin:hyprglass:manage_window_blur";
 inline constexpr auto SKIP_OPAQUE_WINDOWS = "plugin:hyprglass:skip_opaque_windows";
+inline constexpr auto BLUR_FOLD           = "plugin:hyprglass:blur_fold";
 
 // Performance diagnostics
 inline constexpr auto DEBUG_MODE   = "plugin:hyprglass:debug:mode";
@@ -296,6 +297,9 @@ struct SPluginConfig {
     // Skip glass for windows CWindow::opaque() reports as opaque: nothing behind
     // them is visible, so sampling and blurring their background is wasted work.
     Hyprlang::INT* const* skipOpaqueWindows = nullptr;
+    // Derives a smaller blur pass count from the requested radius (GlassRenderer::
+    // foldBlurPasses) instead of always running blur_iterations passes at full radius.
+    Hyprlang::INT* const* blurFold = nullptr;
     StringConfigPtr      defaultTheme;
     StringConfigPtr      defaultPreset;
 

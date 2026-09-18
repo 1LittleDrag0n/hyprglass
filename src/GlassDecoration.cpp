@@ -17,7 +17,6 @@
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
-#include <hyprutils/math/Misc.hpp>
 #include <hyprutils/math/Region.hpp>
 
 CGlassDecoration::CGlassDecoration(PHLWINDOW window)
@@ -433,6 +432,13 @@ void CGlassDecoration::renderPass(PHLMONITOR monitor, const float& alpha) {
 
             float blurRadius     = blurStrength * 12.0f / downscale;
             int blurIterations   = std::clamp(static_cast<int>(resolvePresetInt(ctx, &SPresetValues::blurIterations, &SOverridableConfig::blurIterations)), 1, 5);
+
+            if (ctx.config.blurFold && **ctx.config.blurFold) {
+                const GlassRenderer::SFoldedBlur folded = GlassRenderer::foldBlurPasses(blurRadius, blurIterations);
+                blurRadius     = folded.radius;
+                blurIterations = folded.iterations;
+            }
+
             GlassRenderer::blurBackground(m_sampleFramebuffer, blurRadius, blurIterations, source);
 
             m_hasCachedSample       = true;

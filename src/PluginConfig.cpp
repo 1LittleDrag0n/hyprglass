@@ -57,6 +57,7 @@ void registerConfig(HANDLE handle) {
     addConfigValue<Config::Values::Int>(handle, ConfigKeys::ENABLED, Config::INTEGER{1});
     addConfigValue<Config::Values::Int>(handle, ConfigKeys::MANAGE_WINDOW_BLUR, Config::INTEGER{1});
     addConfigValue<Config::Values::Int>(handle, ConfigKeys::SKIP_OPAQUE_WINDOWS, Config::INTEGER{1});
+    addConfigValue<Config::Values::Int>(handle, ConfigKeys::BLUR_FOLD, Config::INTEGER{1});
     addConfigValue<Config::Values::String>(handle, ConfigKeys::DEFAULT_THEME, Config::STRING{"dark"});
     addConfigValue<Config::Values::String>(handle, ConfigKeys::DEFAULT_PRESET, Config::STRING{"default"});
 
@@ -249,6 +250,7 @@ void initConfigPointers(HANDLE handle, SPluginConfig& config) {
     config.enabled           = getStaticPtr<Hyprlang::INT>(handle, ConfigKeys::ENABLED);
     config.manageWindowBlur  = getStaticPtr<Hyprlang::INT>(handle, ConfigKeys::MANAGE_WINDOW_BLUR);
     config.skipOpaqueWindows = getStaticPtr<Hyprlang::INT>(handle, ConfigKeys::SKIP_OPAQUE_WINDOWS);
+    config.blurFold          = getStaticPtr<Hyprlang::INT>(handle, ConfigKeys::BLUR_FOLD);
     config.defaultTheme  = getStringPtr(handle, ConfigKeys::DEFAULT_THEME);
     config.defaultPreset = getStringPtr(handle, ConfigKeys::DEFAULT_PRESET);
 

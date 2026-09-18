@@ -58,6 +58,17 @@ SSampleMap sampleMapFor(const CBox& box, int downscale) {
     return map;
 }
 
+SFoldedBlur foldBlurPasses(float radius, int iterations) noexcept {
+    const float totalRadius      = radius * std::sqrt(static_cast<float>(iterations));
+    const float cappedRatio      = totalRadius / BLUR_SHADER_TAP_CAP;
+    const int   foldedIterations = std::max(1, static_cast<int>(std::ceil(cappedRatio * cappedRatio)));
+
+    if (foldedIterations >= iterations)
+        return {radius, iterations};
+
+    return {totalRadius / std::sqrt(static_cast<float>(foldedIterations)), foldedIterations};
+}
+
 void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IFramebuffer> sourceFramebuffer,
                        CBox box, Vector2D& outPaddingRatio, int downscale) {
     if (!sourceFramebuffer)

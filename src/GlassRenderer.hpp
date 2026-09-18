@@ -23,6 +23,29 @@ inline constexpr int SAMPLE_PADDING_PX = 60;
 inline constexpr int   BLUR_DOWNSCALE_MAX       = 2;
 inline constexpr float BLUR_DOWNSCALE_THRESHOLD = 0.35f; // min blur_strength for downscale
 
+// Tap cap in gaussianblur.frag's `min(int(ceil(blurRadius)), 8)` (Shaders.hpp) — the
+// per-pass radius where taps stop tracking radius 1:1 and the shader's designed ~3 sigma
+// coverage starts truncating. Named and shared from here rather than repeating the literal
+// so sampleReachPx() and foldBlurPasses() cannot drift from the shader's own cap.
+inline constexpr float BLUR_SHADER_TAP_CAP = 8.0f;
+
+// Result of folding N blur passes at a fixed radius into fewer, larger-radius passes.
+// See foldBlurPasses().
+struct SFoldedBlur {
+    float radius;
+    int   iterations;
+};
+
+// Gaussian semigroup identity: N passes at `radius` produce the same total blur as one pass
+// at `radius * sqrt(N)`, so N passes of sigma compound rather than average (blurBackground()
+// reuses the same radius every pass). Finds the smallest pass count N' whose own per-pass
+// radius (r_total / sqrt(N')) stays at or under the shader's tap cap, preserving the
+// requested total blur while cutting fetches. Only ever returns fewer passes than requested:
+// when the derived N' would be >= the input iterations (the fold would cost the same amount
+// of work or more — e.g. a wide single-pass radius needing many passes to stay untruncated),
+// the input is returned unchanged.
+[[nodiscard]] SFoldedBlur foldBlurPasses(float radius, int iterations) noexcept;
+
 // Worst-case pixel radius, beyond a window's own box, of the raw texels the glass
 // pipeline reads to produce an output pixel at that edge: blur kernel reach + the
 // refraction pass's pull + chromatic aberration's extra spread. SAMPLE_PADDING_PX is
@@ -32,11 +55,21 @@ inline constexpr float BLUR_DOWNSCALE_THRESHOLD = 0.35f; // min blur_strength fo
 // compare this reach against Hyprland's own live-blur damage margin (1.5 *
 // CRenderPass::oneBlurRadius(), render/pass/Pass.cpp) — when the margin is smaller,
 // finalDamage discards texels this pipeline still samples.
-[[nodiscard]] constexpr float sampleReachPx(float blurStrength, int iterations, float chromaticAberration, float refractionStrength) {
+// foldEnabled must mirror the live `blur_fold` config value: the reach has to describe
+// what renderPass() actually reads, and renderPass() only folds when the setting is on.
+[[nodiscard]] inline float sampleReachPx(float blurStrength, int iterations, float chromaticAberration, float refractionStrength, bool foldEnabled) {
     const int   downscale   = blurStrength >= BLUR_DOWNSCALE_THRESHOLD ? BLUR_DOWNSCALE_MAX : 1;
-    const float blurRadius  = blurStrength * 12.0f / downscale; // matches renderPass() in GlassDecoration.cpp / GlassLayerSurface.cpp
-    const float tapsPerPass = std::min(std::ceil(blurRadius), 8.0f); // matches gaussianblur.frag's `min(int(ceil(blurRadius)), 8)` exactly (Shaders.hpp)
-    const float blurReachPx = tapsPerPass * static_cast<float>(downscale) * static_cast<float>(iterations);
+    float       blurRadius  = blurStrength * 12.0f / downscale; // matches renderPass() in GlassDecoration.cpp / GlassLayerSurface.cpp
+    int         passCount   = iterations;
+
+    if (foldEnabled) {
+        const SFoldedBlur folded = foldBlurPasses(blurRadius, iterations);
+        blurRadius = folded.radius;
+        passCount  = folded.iterations;
+    }
+
+    const float tapsPerPass = std::min(std::ceil(blurRadius), BLUR_SHADER_TAP_CAP);
+    const float blurReachPx = tapsPerPass * static_cast<float>(downscale) * static_cast<float>(passCount);
 
     // refractionPx = refractionStrength * 50.0 in the glass shader (Shaders.hpp). Negative
     // strength (invalid but not rejected by config parsing) must not shrink the reach below

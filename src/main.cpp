@@ -506,7 +506,10 @@ static void checkBlurMarginSafety() {
     // refraction_strength above this global value per window; this check only covers
     // the global layer, matching blurStrength/blurIterations/chromaticAberration above.
     const float refractionStrength = **config.global.refractionStrength;
-    const float reach              = GlassRenderer::sampleReachPx(blurStrength, iterations, chromaticAberration, refractionStrength);
+    // Must mirror what renderPass() actually folds at draw time, or this reach
+    // stops describing the texels the pipeline really reads.
+    const bool  foldEnabled        = config.blurFold && **config.blurFold;
+    const float reach              = GlassRenderer::sampleReachPx(blurStrength, iterations, chromaticAberration, refractionStrength, foldEnabled);
 
     if (margin >= reach) {
         lastWarnedMarginReach.reset(); // safe again; a later regression warns again
