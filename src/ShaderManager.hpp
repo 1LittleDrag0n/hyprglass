@@ -11,10 +11,12 @@ struct SGlassUniforms {
     GLint specularStrength = -1;
     GLint glassOpacity = -1;
     GLint edgeThickness = -1;
+    GLint invBezelWidthPx = -1;
     GLint uvPadding = -1;
     GLint tintColor = -1;
     GLint tintAlpha = -1;
     GLint lensDistortion = -1;
+    GLint lensMaxPx = -1;
     GLint saturation = -1;
     GLint vibrancyDarkness = -1;
     GLint adaptiveDim = -1;
@@ -33,6 +35,8 @@ struct SGlassUniforms {
     GLint bevelAngle = -1;
     GLint bevelShadow = -1;
     GLint specularAngle = -1;
+    GLint invFullSize = -1;
+    GLint invRoundingPower = -1;
 
     // Layers only: temp FBO surface mask for content-aware glass
     GLint maskTex = -1;

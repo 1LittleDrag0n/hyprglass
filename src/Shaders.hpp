@@ -32,6 +32,7 @@ precision highp float;
 
 uniform sampler2D tex;
 uniform vec2 fullSize;
+uniform vec2 invFullSize;      // = 1.0 / fullSize, hoisted out of the per-pixel divisions below
 uniform float radius;
 uniform vec2 uvPadding;
 
@@ -41,9 +42,11 @@ uniform float fresnelStrength;
 uniform float specularStrength;
 uniform float glassOpacity;
 uniform float edgeThickness;
+uniform float invBezelWidthPx; // = 1.0 / (edgeThickness * minDim), hoisted per-draw
 uniform vec3 tintColor;
 uniform float tintAlpha;
 uniform float lensDistortion;
+uniform float lensMaxPx;       // = lensDistortion * minDim * 0.006, hoisted per-draw
 uniform float brightness;
 uniform float contrast;
 uniform float saturation;
@@ -52,6 +55,7 @@ uniform float vibrancyDarkness;
 uniform float adaptiveDim;
 uniform float adaptiveBoost;
 uniform float roundingPower;
+uniform float invRoundingPower; // = 1.0 / roundingPower, hoisted per-draw
 uniform float refractionFlow;
 uniform float refractionSpread;
 uniform float fresnelTint;
@@ -110,8 +114,12 @@ vec4 sampleBlurred(vec2 wuv) {
 // SDF
 // ============================================================================
 
-float lpNorm(vec2 v, float p) {
-    return pow(pow(abs(v.x), p) + pow(abs(v.y), p), 1.0 / p);
+float lpNorm(vec2 v, float p, float invP) {
+    // Exact identity: pow(x^2+y^2, 0.5) == length(v) when p == 2.0 (the
+    // Hyprland default). Native sqrt is a single correctly-rounded hardware
+    // op vs. two pow()s (exp2/log2-based) + a third pow() for the outer root.
+    if (p == 2.0) return length(v);
+    return pow(pow(abs(v.x), p) + pow(abs(v.y), p), invP);
 }
 
 float getRoundedBoxSDF(vec2 uv, float r) {
@@ -119,7 +127,7 @@ float getRoundedBoxSDF(vec2 uv, float r) {
     vec2 halfSize = fullSize * 0.5;
     float clampedR = min(r, min(halfSize.x, halfSize.y));
     vec2 q = abs(p) - halfSize + clampedR;
-    return min(max(q.x, q.y), 0.0) + lpNorm(max(q, 0.0), roundingPower) - clampedR;
+    return min(max(q.x, q.y), 0.0) + lpNorm(max(q, 0.0), roundingPower, invRoundingPower) - clampedR;
 }
 
 float getCornerSDF(vec2 uv) {
@@ -217,7 +225,7 @@ void main() {
     // edgeProximity: 1.0 at boundary, exponential decay inward
     // inwardDir: pixel-space direction toward center (smooth everywhere)
     // ========================================
-    float edgeProximity = exp(cornerSdf / bezelWidthPx);
+    float edgeProximity = exp(cornerSdf * invBezelWidthPx);
     vec2 inwardDir = refractionDir(uv);
     vec2 posPx = (uv - 0.5) * fullSize; // pixel-space position for the edge-flow direction below
 
@@ -244,7 +252,7 @@ void main() {
         float mixedLen = length(mixedDir);
         dir = mixedLen > 0.0001 ? mixedDir / mixedLen : inwardDir;
     }
-    vec2 baseOffset = dir * refractionMag / fullSize;
+    vec2 baseOffset = dir * refractionMag * invFullSize;
 
     // ========================================
     // CHROMATIC ABERRATION — per-channel refraction scale
@@ -266,9 +274,8 @@ void main() {
             -4.0 * c.x * (1.0 - c.y * c.y),
             -4.0 * c.y * (1.0 - c.x * c.x)
         );
-        float lensMaxPx = lensDistortion * minDim * 0.006;
         float lensFade = 1.0 - edgeProximity;
-        domeUV = dGrad * lensMaxPx * lensFade / fullSize;
+        domeUV = dGrad * lensMaxPx * lensFade * invFullSize;
     }
 
     // ========================================
