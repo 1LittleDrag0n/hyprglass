@@ -42,13 +42,33 @@ enum class ELayerMaskMode { AUTO, ALPHA, REGION };
 // Parses "auto"/"alpha"/"region"; nullopt for anything else.
 [[nodiscard]] std::optional<ELayerMaskMode> parseLayerMaskMode(std::string_view value);
 
+// Instrumentation mode (plugin:hyprglass:debug:mode). Isolates the render-pass
+// cost from the GL pipeline cost for A/B measurement: hints_only skips all GL
+// work in the pass elements while keeping their boundingBox/needsLiveBlur/
+// disableSimplification hints; gl_work_only runs the GL pipeline as normal but
+// forces needsLiveBlur/disableSimplification off on both pass elements.
+enum class EDebugMode { OFF, HINTS_ONLY, GL_WORK_ONLY };
+
+// Parses "off"/"hints_only"/"gl_work_only"; nullopt for anything else.
+[[nodiscard]] std::optional<EDebugMode> parseDebugMode(std::string_view value);
+
+// Reads plugin:hyprglass:debug:mode, falling back to OFF for an unset global
+// state or an unrecognized value (validateConfig() warns about the latter).
+[[nodiscard]] EDebugMode currentDebugMode();
+
 namespace ConfigKeys {
 
 // Global-only
-inline constexpr auto ENABLED            = "plugin:hyprglass:enabled";
-inline constexpr auto DEFAULT_THEME      = "plugin:hyprglass:default_theme";
-inline constexpr auto DEFAULT_PRESET     = "plugin:hyprglass:default_preset";
-inline constexpr auto MANAGE_WINDOW_BLUR = "plugin:hyprglass:manage_window_blur";
+inline constexpr auto ENABLED             = "plugin:hyprglass:enabled";
+inline constexpr auto DEFAULT_THEME       = "plugin:hyprglass:default_theme";
+inline constexpr auto DEFAULT_PRESET      = "plugin:hyprglass:default_preset";
+inline constexpr auto MANAGE_WINDOW_BLUR  = "plugin:hyprglass:manage_window_blur";
+inline constexpr auto SKIP_OPAQUE_WINDOWS = "plugin:hyprglass:skip_opaque_windows";
+inline constexpr auto BLUR_FOLD           = "plugin:hyprglass:blur_fold";
+
+// Performance diagnostics
+inline constexpr auto DEBUG_MODE   = "plugin:hyprglass:debug:mode";
+inline constexpr auto DEBUG_TIMERS = "plugin:hyprglass:debug:timers";
 
 // Preset keyword, registered as unscoped because Hyprlang does not dispatch
 // scoped keyword handlers inside the plugin special category.
@@ -99,6 +119,13 @@ inline constexpr auto LAYERS_FORCE_LIVE_RESAMPLE        = "plugin:hyprglass:laye
 inline constexpr auto LAYERS_MASK_MODE                  = "plugin:hyprglass:layers:mask_mode";
 inline constexpr auto LAYERS_NAMESPACE_MASK_MODES       = "plugin:hyprglass:layers:namespace_mask_modes";
 inline constexpr auto LAYERS_MANAGE_BLUR                = "plugin:hyprglass:layers:manage_blur";
+
+// Window background cache kill switch; commit-driven invalidation (single
+// global bool, no per-namespace concept for windows) and its throttle —
+// mirrors the layers:live_resample/live_resample_fps keys above.
+inline constexpr auto WINDOWS_BACKGROUND_CACHE  = "plugin:hyprglass:windows:background_cache";
+inline constexpr auto WINDOWS_LIVE_RESAMPLE     = "plugin:hyprglass:windows:live_resample";
+inline constexpr auto WINDOWS_LIVE_RESAMPLE_FPS = "plugin:hyprglass:windows:live_resample_fps";
 
 // Overridable — dark theme overrides
 inline constexpr auto DARK_BLUR_STRENGTH        = "plugin:hyprglass:dark:blur_strength";
@@ -261,14 +288,24 @@ inline std::string_view readStringConfig(const StringConfigPtr& ptr) {
 }
 
 struct SPluginConfig {
-    Hyprlang::INT* const* enabled          = nullptr;
+    Hyprlang::INT* const* enabled           = nullptr;
     // Glass replaces Hyprland's blur for glassed windows: when set, the plugin
     // marks them with the noblur window property so Hyprland composites them
     // against the live framebuffer (which contains the glass) instead of its
     // pre-frame cached blur.
-    Hyprlang::INT* const* manageWindowBlur = nullptr;
+    Hyprlang::INT* const* manageWindowBlur  = nullptr;
+    // Skip glass for windows CWindow::opaque() reports as opaque: nothing behind
+    // them is visible, so sampling and blurring their background is wasted work.
+    Hyprlang::INT* const* skipOpaqueWindows = nullptr;
+    // Derives a smaller blur pass count from the requested radius (GlassRenderer::
+    // foldBlurPasses) instead of always running blur_iterations passes at full radius.
+    Hyprlang::INT* const* blurFold = nullptr;
     StringConfigPtr      defaultTheme;
     StringConfigPtr      defaultPreset;
+
+    // Performance diagnostics (see Diagnostics.hpp for the hyprctl side)
+    StringConfigPtr       debugMode;
+    Hyprlang::INT* const* debugTimers = nullptr;
 
     Hyprlang::INT* const* layersEnabled                  = nullptr;
     StringConfigPtr       layersNamespaces;
@@ -283,6 +320,10 @@ struct SPluginConfig {
     StringConfigPtr       layersMaskMode;
     StringConfigPtr       layersNamespaceMaskModes;
     Hyprlang::INT* const* layersManageBlur               = nullptr;
+
+    Hyprlang::INT* const* windowsBackgroundCache  = nullptr;
+    Hyprlang::INT* const* windowsLiveResample     = nullptr;
+    Hyprlang::INT* const* windowsLiveResampleFps  = nullptr;
 
     SOverridableConfig global;
     SOverridableConfig dark;

@@ -73,6 +73,16 @@ struct SGlobalState {
             sceneGeneration[mon->m_id]++;
     }
 
+    // Render-order fingerprint: a per-monitor running hash folded from every
+    // glass-eligible window's identity/geometry/alpha in z-order, compared frame
+    // to frame to catch stacking/membership changes (e.g. a window closing behind
+    // a cached glass window) that no other event bumps scene generation for.
+    struct SRenderFingerprint {
+        size_t runningHash = 0;
+        size_t lastHash    = 0;
+    };
+    std::unordered_map<MONITORID, SRenderFingerprint> renderFingerprints;
+
     // Surface-commit observation driving the layer live resample: the
     // subscriptions that discover surfaces, and one commit/destroy pair per
     // watched surface. Owned here for the same reason as `listeners`: PLUGIN_EXIT

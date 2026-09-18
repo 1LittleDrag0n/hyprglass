@@ -130,6 +130,8 @@ plugin:hyprglass {
 |---|---|---|---|
 | `enabled` | bool | `true` (`1` in .conf) | Enable/disable the effect globally. Per-window tags override this. |
 | `manage_window_blur` | bool | `true` (`1` in .conf) | Automatically set the `noblur` property on glassed windows. Glass replaces Hyprland's blur; without `noblur`, Hyprland's cached-blur optimization (`blur:new_optimizations`) hides the glass on static windows. Set to `0` to manage `windowrule = noblur` yourself. |
+| `skip_opaque_windows` | bool | `true` (`1` in .conf) | Skip glass under an opaque window — it would be invisible anyway, so skipping it saves GPU. Set to `0` to force glass everywhere. Windows using `self_sample` are never skipped, since their glass shows their own content. |
+| `blur_fold` | bool | `true` (`1` in .conf) | Fewer blur passes with an identical look. Set to `0` to always run `blur_iterations` passes at the configured radius. |
 | `default_theme` | string | `dark` | Default theme: `dark` or `light` |
 | `default_preset` | string | `default` | Default preset name |
 
@@ -255,6 +257,18 @@ hg.layer("debug-panel", { exclude = true })
 
 > Layer support hooks into Hyprland's internal render pipeline. This is version-sensitive and may break across Hyprland updates.
 
+### Window background cache
+
+Windows cache their sampled, blurred background and only re-sample it when something actually changed behind the window (it moved/resized, the window behind it changed, or the cache was just allocated) — the same idea as the layer `live_resample` cache above, always on.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `windows:background_cache` | bool | `true` (`1` in .conf) | Reuse a window's last sampled+blurred background instead of re-sampling it every frame. Set to `0` to always re-sample (pre-cache behavior). |
+| `windows:live_resample` | bool | `true` (`1` in .conf) | Re-render window glass when content behind it changes (e.g. a playing video, another window). GPU cost scales with background activity; static scenes stay free |
+| `windows:live_resample_fps` | int | `30` | Max background-dirty marks per second for windows. `0` = uncapped |
+
+> `hyprctl hyprglass stats` reports `win_hit`/`win_miss`/`win_defer`/`win_disc` per monitor to watch the cache in action.
+
 ### Per-window overrides
 
 Control the effect, theme, and preset per window via tags.
@@ -372,6 +386,28 @@ For windows, the plugin integrates with Hyprland's render pass system as a `DECO
 
 ```bash
 hyprctl plugin unload /path/to/hyprglass.so
+```
+
+## Performance diagnostics
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `debug:mode` | string | `off` | `off`, `hints_only` (render pass hints only, no GL work — isolates render-pass cost), or `gl_work_only` (runs the GL pipeline but drops the live-blur hint — isolates pipeline cost from render-pass damage-expansion cost). For A/B GPU measurement; leave `off` for normal use. |
+| `debug:timers` | bool | `false` (`0` in .conf) | Time each pipeline stage on the GPU (`GL_EXT_disjoint_timer_query`) and report per-stage averages in `hyprctl hyprglass stats`. No effect if the driver doesn't support the extension. |
+
+```bash
+hyprctl hyprglass stats          # per-monitor counters and (if enabled) stage timers
+hyprctl hyprglass stats reset    # zero every counter and accumulated timer
+hyprctl j/hyprglass stats        # same, as JSON
+```
+
+```
+hyprglass stats
+  stage timers: off (plugin:hyprglass:debug:timers = 0)
+
+  monitor        frames  win_draws  opaque_skip  win_hit  win_miss  win_defer  win_disc  layer_draws  layer_hit  layer_miss  blur_pass  sampled_mpx  glass_mpx
+  eDP-1            7212       3401         5122     3120       240         41         0         1560       1420          92       5520        41.30      18.77
+  eDP-1          per frame: 0.47 win draws, 0.22 layer draws, 0.77 blur passes, 0.006 sampled mpx, 0.003 glass mpx
 ```
 
 ## Notes

@@ -26,10 +26,15 @@ class CGlassPassElement : public IPassElement {
     [[nodiscard]] bool                needsPrecomputeBlur() override;
     [[nodiscard]] std::optional<CBox> boundingBox() override;
     [[nodiscard]] bool                disableSimplification() override;
+    void                               discard() override;
 
     [[nodiscard]] const char* passName() override { return "CGlassPassElement"; }
     [[nodiscard]] ePassElementType type() override { return EK_CUSTOM; }
 
   private:
+    // Shared by boundingBox() and needsLiveBlur() so they can never disagree
+    // about whether a box exists — see needsLiveBlur()'s comment.
+    [[nodiscard]] std::optional<CBox> paddedLogicalBox() const;
+
     SGlassPassData m_data;
 };

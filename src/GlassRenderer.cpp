@@ -1,5 +1,6 @@
 #include "GlassRenderer.hpp"
 #include "BuiltInPresets.hpp"
+#include "Diagnostics.hpp"
 #include "Globals.hpp"
 
 #include <algorithm>
@@ -57,15 +58,35 @@ SSampleMap sampleMapFor(const CBox& box, int downscale) {
     return map;
 }
 
+SFoldedBlur foldBlurPasses(float radius, int iterations) noexcept {
+    const float totalRadius      = radius * std::sqrt(static_cast<float>(iterations));
+    const float cappedRatio      = totalRadius / BLUR_SHADER_TAP_CAP;
+    const int   foldedIterations = std::max(1, static_cast<int>(std::ceil(cappedRatio * cappedRatio)));
+
+    if (foldedIterations >= iterations)
+        return {radius, iterations};
+
+    return {totalRadius / std::sqrt(static_cast<float>(foldedIterations)), foldedIterations};
+}
+
 void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IFramebuffer> sourceFramebuffer,
                        CBox box, Vector2D& outPaddingRatio, int downscale) {
     if (!sourceFramebuffer)
         return;
+
+    Diagnostics::CScopedStageTimer stageTimer(Diagnostics::EStage::SampleBackground);
+
     const int  pad = SAMPLE_PADDING_PX;
     const auto map = sampleMapFor(box, downscale);
 
     int fullWidth  = map.fullWidth;
     int fullHeight = map.fullHeight;
+
+    // Full-res source pixels this call blits, before any downscale — what the
+    // GPU actually reads off the source framebuffer, not the (possibly
+    // half-res) destination the sample FBO ends up holding.
+    if (const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock())
+        Diagnostics::recordSampledPixels(monitor->m_id, static_cast<double>(fullWidth) * static_cast<double>(fullHeight));
 
     int sampleWidth  = map.width;
     int sampleHeight = map.height;
@@ -94,10 +115,14 @@ void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IF
     const float xScale = map.scaleX;
     const float yScale = map.scaleY;
 
-    if (srcX0 < 0) { dstX0 += static_cast<int>(-srcX0 * xScale); srcX0 = 0; }
-    if (srcY0 < 0) { dstY0 += static_cast<int>(-srcY0 * yScale); srcY0 = 0; }
-    if (srcX1 > framebufferWidth)  { dstX1 -= static_cast<int>((srcX1 - framebufferWidth) * xScale);  srcX1 = framebufferWidth; }
-    if (srcY1 > framebufferHeight) { dstY1 -= static_cast<int>((srcY1 - framebufferHeight) * yScale); srcY1 = framebufferHeight; }
+    // Tracks whether any clamp shrank the destination rect below the full FBO,
+    // which is the only case that can leave uninitialized texels after the blit.
+    bool destinationClamped = false;
+
+    if (srcX0 < 0) { dstX0 += static_cast<int>(-srcX0 * xScale); srcX0 = 0; destinationClamped = true; }
+    if (srcY0 < 0) { dstY0 += static_cast<int>(-srcY0 * yScale); srcY0 = 0; destinationClamped = true; }
+    if (srcX1 > framebufferWidth)  { dstX1 -= static_cast<int>((srcX1 - framebufferWidth) * xScale);  srcX1 = framebufferWidth; destinationClamped = true; }
+    if (srcY1 > framebufferHeight) { dstY1 -= static_cast<int>((srcY1 - framebufferHeight) * yScale); srcY1 = framebufferHeight; destinationClamped = true; }
 
     // Padding ratio is relative to the logical content area (resolution-independent)
     outPaddingRatio = Vector2D(
@@ -110,11 +135,15 @@ void sampleBackground(SP<Render::IFramebuffer>& sampleFramebuffer, SP<Render::IF
     // DRAW framebuffer, causing partial writes and stale noise artifacts.
     g_pHyprOpenGL->setCapStatus(GL_SCISSOR_TEST, false);
 
-    // Clear the sample FBO before blitting. Clamped regions (near edges)
-    // would otherwise contain uninitialized GPU memory (pink artifacts).
-    glBindFramebuffer(GL_FRAMEBUFFER, fbId(sampleFramebuffer));
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    // Clear the sample FBO before blitting only when the blit destination
+    // doesn't cover the whole FBO. Clamped regions (near monitor edges)
+    // would otherwise leave uninitialized GPU memory (pink artifacts) outside
+    // the blit; a full-rect blit overwrites every texel, so the clear is redundant.
+    if (destinationClamped) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbId(sampleFramebuffer));
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbId(sourceFramebuffer));
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbId(sampleFramebuffer));
@@ -283,6 +312,12 @@ void blurBackground(SP<Render::IFramebuffer> sampleFramebuffer, float radius, in
     if (!sampleFramebuffer || !callerFramebuffer || radius <= 0.0f || iterations <= 0 || !shaderManager.isInitialized())
         return;
 
+    Diagnostics::CScopedStageTimer stageTimer(Diagnostics::EStage::BlurBackground);
+
+    // Two ping-pong passes (horizontal, vertical) per iteration.
+    if (const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock())
+        Diagnostics::recordBlurPasses(monitor->m_id, static_cast<uint64_t>(iterations) * 2);
+
     int width  = static_cast<int>(sampleFramebuffer->m_size.x);
     int height = static_cast<int>(sampleFramebuffer->m_size.y);
 
@@ -345,6 +380,11 @@ void applyGlassEffect(SP<Render::IFramebuffer> sampleFramebuffer, SP<Render::IFr
     if (!sampleFramebuffer || !targetFramebuffer)
         return;
 
+    Diagnostics::CScopedStageTimer stageTimer(Diagnostics::EStage::ApplyGlassEffect);
+
+    if (const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock())
+        Diagnostics::recordGlassPixels(monitor->m_id, rawBox.w * rawBox.h);
+
     auto& shaderManager  = g_pGlobalState->shaderManager;
     const auto& uniforms = shaderManager.glassUniforms;
 
@@ -378,14 +418,26 @@ void applyGlassEffect(SP<Render::IFramebuffer> sampleFramebuffer, SP<Render::IFr
     shader->setUniformFloat2(SHADER_FULL_SIZE,
         static_cast<float>(fullSize.x), static_cast<float>(fullSize.y));
 
+    // Reciprocals computed once per draw instead of once per pixel in the shader.
+    const float minDimensionPx = static_cast<float>(std::min(fullSize.x, fullSize.y));
+    glUniform2f(uniforms.invFullSize,
+        1.0f / static_cast<float>(fullSize.x), 1.0f / static_cast<float>(fullSize.y));
+    glUniform1f(uniforms.invRoundingPower, 1.0f / roundingPower);
+
+    const float edgeThicknessValue = resolvePresetFloat(resolveContext, &SPresetValues::edgeThickness, &SOverridableConfig::edgeThickness);
+    const float lensDistortionValue = resolvePresetFloat(resolveContext, &SPresetValues::lensDistortion, &SOverridableConfig::lensDistortion);
+    // Epsilon guard matches the shader's own degenerate-size behaviour (bezelWidthPx == 0 would divide by zero).
+    glUniform1f(uniforms.invBezelWidthPx, 1.0f / std::max(edgeThicknessValue * minDimensionPx, 1e-4f));
+    glUniform1f(uniforms.lensMaxPx, lensDistortionValue * minDimensionPx * 0.006f);
+
     glUniform1f(uniforms.refractionStrength,  resolvePresetFloat(resolveContext, &SPresetValues::refractionStrength, &SOverridableConfig::refractionStrength));
     glUniform1f(uniforms.chromaticAberration, resolvePresetFloat(resolveContext, &SPresetValues::chromaticAberration, &SOverridableConfig::chromaticAberration));
     glUniform1f(uniforms.fresnelStrength,     resolvePresetFloat(resolveContext, &SPresetValues::fresnelStrength, &SOverridableConfig::fresnelStrength));
     glUniform1f(uniforms.specularStrength,    resolvePresetFloat(resolveContext, &SPresetValues::specularStrength, &SOverridableConfig::specularStrength));
     glUniform1f(uniforms.specularAngle,       resolvePresetFloat(resolveContext, &SPresetValues::specularAngle, &SOverridableConfig::specularAngle));
     glUniform1f(uniforms.glassOpacity,        resolvePresetFloat(resolveContext, &SPresetValues::glassOpacity, &SOverridableConfig::glassOpacity) * alpha);
-    glUniform1f(uniforms.edgeThickness,       resolvePresetFloat(resolveContext, &SPresetValues::edgeThickness, &SOverridableConfig::edgeThickness));
-    glUniform1f(uniforms.lensDistortion,      resolvePresetFloat(resolveContext, &SPresetValues::lensDistortion, &SOverridableConfig::lensDistortion));
+    glUniform1f(uniforms.edgeThickness,       edgeThicknessValue);
+    glUniform1f(uniforms.lensDistortion,      lensDistortionValue);
     glUniform1f(uniforms.refractionFlow,      resolvePresetFloat(resolveContext, &SPresetValues::refractionFlow, &SOverridableConfig::refractionFlow));
     glUniform1f(uniforms.refractionSpread,    resolvePresetFloat(resolveContext, &SPresetValues::refractionSpread, &SOverridableConfig::refractionSpread));
     glUniform1f(uniforms.fresnelTint,         resolvePresetFloat(resolveContext, &SPresetValues::fresnelTint, &SOverridableConfig::fresnelTint));
@@ -446,18 +498,33 @@ void applyGlassEffect(SP<Render::IFramebuffer> sampleFramebuffer, SP<Render::IFr
         if (mask->regionRectCount > 0)
             glUniform4fv(uniforms.regionRects, mask->regionRectCount,
                          reinterpret_cast<const float*>(mask->regionRects.data()));
+        glUniform2f(uniforms.sampleUVOffset,
+            static_cast<float>(mask->sampleUVOffset.x), static_cast<float>(mask->sampleUVOffset.y));
+        glUniform2f(uniforms.sampleUVScale,
+            static_cast<float>(mask->sampleUVScale.x), static_cast<float>(mask->sampleUVScale.y));
     } else {
         glUniform1i(uniforms.useMask, 0);
         glUniform1f(uniforms.maskAlphaThreshold, 0.001f);
         glUniform1i(uniforms.maskMode, 0);
         glUniform1i(uniforms.regionRectCount, 0);
+        // Windows, and layers outside PROTOCOL_REGION, always sample the same
+        // box they draw — identity, since this shader program's uniforms
+        // persist across draws that don't set them (a prior region-mode
+        // layer's non-identity value would otherwise leak into this draw).
+        glUniform2f(uniforms.sampleUVOffset, 0.0f, 0.0f);
+        glUniform2f(uniforms.sampleUVScale, 1.0f, 1.0f);
     }
 
     shader->setUniformFloat(SHADER_RADIUS, cornerRadius);
     shader->setUniformFloat(SHADER_ROUNDING_POWER, roundingPower);
 
     glBindVertexArray(shader->getUniformLocation(SHADER_SHADER_VAO));
-    g_pHyprOpenGL->scissor(rawBox);
+
+    // Only finalDamage is copied to the screen, and elementDamage (which finalDamage is a
+    // subset of) already covers every pixel we're visible at, so scissoring to the damage
+    // clips no pixel that would otherwise reach the screen.
+    CBox damageExtents = g_pHyprRenderer->m_renderData.damage.copy().intersect(rawBox).getExtents();
+    g_pHyprOpenGL->scissor(damageExtents.w > 0 && damageExtents.h > 0 ? damageExtents : rawBox);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     g_pHyprOpenGL->scissor(nullptr);
 }
