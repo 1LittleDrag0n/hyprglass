@@ -3,6 +3,7 @@
 #include "GlassRenderer.hpp"
 #include "PluginConfig.hpp"
 
+#include <chrono>
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/render/decorations/IHyprWindowDecoration.hpp>
 #include <hyprland/src/render/Framebuffer.hpp>
@@ -43,6 +44,12 @@ class CGlassDecoration : public IHyprWindowDecoration {
     // snapshot taken before plugin decorations render — without noblur the
     // glass is invisible on static windows (#46).
     bool m_noBlurApplied = false;
+
+    // Fade the glass in when it is switched back on (e.g. a hyprwobbly wobble
+    // ends and the hyprglass_disabled tag is dropped), so it does not pop.
+    float                                 m_fade        = 1.0F;
+    bool                                  m_lastEnabled = true;
+    std::chrono::steady_clock::time_point m_fadeStart{};
 
     void updateNoBlurProp(bool glassEnabled);
     void withdrawNoBlur();

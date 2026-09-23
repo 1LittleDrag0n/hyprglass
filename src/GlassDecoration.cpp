@@ -6,6 +6,7 @@
 #include "WindowGeometry.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <GLES3/gl32.h>
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/desktop/rule/windowRule/WindowRuleApplicator.hpp>
@@ -13,6 +14,13 @@
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprutils/math/Misc.hpp>
+
+namespace {
+    // how long the glass takes to fade back in, and how far through that fade
+    // Hyprland's own blur is dropped again
+    constexpr float GLASS_FADE_MS        = 260.0F;
+    constexpr float GLASS_NOBLUR_AT_FADE = 0.65F;
+}
 
 CGlassDecoration::CGlassDecoration(PHLWINDOW window)
     : IHyprWindowDecoration(window), m_window(window) {
@@ -144,7 +152,22 @@ void CGlassDecoration::draw(PHLMONITOR monitor, float const& alpha) {
         return;
 
     const bool enabled = resolveEnabled();
-    updateNoBlurProp(enabled);
+
+    if (enabled != m_lastEnabled) {
+        m_lastEnabled = enabled;
+        m_fadeStart   = std::chrono::steady_clock::now();
+        m_fade        = enabled ? 0.0F : 1.0F;
+    }
+
+    if (enabled && m_fade < 1.0F) {
+        const float ELAPSED = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - m_fadeStart).count();
+        m_fade              = std::clamp(ELAPSED / GLASS_FADE_MS, 0.0F, 1.0F);
+        damageEntire();     // keep frames coming while the fade runs
+    }
+
+    // Hold Hyprland's own blur until the glass is most of the way in, so the two
+    // cross-fade instead of swapping in one visible step.
+    updateNoBlurProp(enabled && m_fade >= GLASS_NOBLUR_AT_FADE);
     if (!enabled)
         return;
 
@@ -238,6 +261,10 @@ void CGlassDecoration::renderPass(PHLMONITOR monitor, const float& alpha) {
     float glassAlpha = window->alphaTotalWithout(Desktop::View::WINDOW_ALPHA_ACTIVE);
     if (const auto workspace = window->m_workspace; workspace && !window->m_pinned)
         glassAlpha *= workspace->m_alpha->value();
+
+    glassAlpha *= m_fade;   // fade-in when the glass is switched back on
+    if (glassAlpha <= 0.01F)
+        return;
 
     GlassRenderer::applyGlassEffect(m_sampleFramebuffer, source,
                                      windowBox, transformBox, glassAlpha,
